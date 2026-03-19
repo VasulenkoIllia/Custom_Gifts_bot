@@ -25,4 +25,26 @@ export async function bootstrap(): Promise<void> {
       webhook_telegram: "/webhook/telegram",
     });
   });
+
+  const shutdown = (signal: string): void => {
+    logger.info("server_shutdown_requested", { signal });
+    server.close(() => {
+      void runtime
+        .shutdown()
+        .then(() => {
+          logger.info("server_stopped", { signal });
+          process.exit(0);
+        })
+        .catch((error) => {
+          logger.error("server_shutdown_failed", {
+            signal,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          process.exit(1);
+        });
+    });
+  };
+
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }

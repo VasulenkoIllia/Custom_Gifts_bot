@@ -5,7 +5,7 @@ import {
 } from "../modules/reactions/reaction-status-rules";
 import type { ReactionIntakeJobPayload } from "../modules/queue/queue-jobs";
 import type { QueueHandler } from "../modules/queue/queue.types";
-import type { TelegramMessageMapStore } from "../modules/telegram/telegram-message-map-store";
+import type { TelegramMessageMapStore } from "../modules/telegram/telegram-message-map.types";
 import type { Logger } from "../observability/logger";
 
 type CreateReactionIntakeWorkerParams = {

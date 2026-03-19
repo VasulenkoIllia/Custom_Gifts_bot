@@ -14,6 +14,8 @@ const rulesPath = path.resolve(
 test("loadReactionStatusRules parses materials status and sorted stages", async () => {
   const rules = await loadReactionStatusRules(rulesPath);
   assert.equal(rules.materialsStatusId, 20);
+  assert.equal(rules.missingFileStatusId, 40);
+  assert.equal(rules.missingTelegramStatusId, 59);
   assert.equal(rules.stages.length, 2);
   assert.equal(rules.stages[0]?.heartCount, 1);
   assert.equal(rules.stages[1]?.heartCount, 2);

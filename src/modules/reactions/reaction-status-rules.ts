@@ -8,12 +8,16 @@ export type ReactionStageRule = {
 
 export type ReactionStatusRules = {
   materialsStatusId: number;
+  missingFileStatusId: number | null;
+  missingTelegramStatusId: number | null;
   stages: ReactionStageRule[];
   rollback: "ignore";
 };
 
 type RawReactionStatusRules = {
   materialsStatusId?: unknown;
+  missingFileStatusId?: unknown;
+  missingTelegramStatusId?: unknown;
   stages?: unknown;
   rollback?: unknown;
 };
@@ -56,6 +60,9 @@ export async function loadReactionStatusRules(filePath: string): Promise<Reactio
     throw new Error("reaction-status-rules: materialsStatusId is required.");
   }
 
+  const missingFileStatusId = parsePositiveInt(parsed.missingFileStatusId);
+  const missingTelegramStatusId = parsePositiveInt(parsed.missingTelegramStatusId);
+
   const stagesRaw = Array.isArray(parsed.stages) ? parsed.stages : [];
   const stageMap = new Map<number, ReactionStageRule>();
 
@@ -83,6 +90,8 @@ export async function loadReactionStatusRules(filePath: string): Promise<Reactio
 
   return {
     materialsStatusId,
+    missingFileStatusId,
+    missingTelegramStatusId,
     stages,
     rollback: "ignore",
   };

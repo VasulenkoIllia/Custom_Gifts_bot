@@ -1,0 +1,11 @@
+node_modules
+dist
+.tmp-test-dist
+.git
+.idea
+docs
+storage
+*.log
+.env
+.env.local
+.env.production

@@ -1,5 +1,5 @@
 import type { Logger } from "../../observability/logger";
-import type { FileIdempotencyStore } from "../orders/order-idempotency";
+import type { IdempotencyStore } from "../orders/order-idempotency";
 import type { OrderIntakeJobPayload } from "../queue/queue-jobs";
 import { QueueOverflowError, QueueService } from "../queue/queue-service";
 import { normalizeKeycrmWebhook } from "./keycrm-webhook-payload";
@@ -9,7 +9,7 @@ import type { WebhookHandleInput, WebhookHandleResult } from "./webhook.types";
 type CreateKeycrmWebhookControllerParams = {
   logger: Logger;
   orderQueue: QueueService<OrderIntakeJobPayload>;
-  idempotencyStore: FileIdempotencyStore;
+  idempotencyStore: IdempotencyStore;
   webhookSecret: string;
 };
 
@@ -18,7 +18,7 @@ const KEYCRM_SECRET_HEADERS = ["x-keycrm-webhook-secret", "x-webhook-secret"];
 export class KeycrmWebhookController {
   private readonly logger: Logger;
   private readonly orderQueue: QueueService<OrderIntakeJobPayload>;
-  private readonly idempotencyStore: FileIdempotencyStore;
+  private readonly idempotencyStore: IdempotencyStore;
   private readonly webhookSecret: string;
 
   constructor(params: CreateKeycrmWebhookControllerParams) {

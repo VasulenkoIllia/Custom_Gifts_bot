@@ -9,6 +9,14 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("PORT is invalid.");
   }
 
+  if (!config.databaseUrl) {
+    throw new Error("DATABASE_URL is required.");
+  }
+
+  if (!Number.isFinite(config.databasePoolMax) || config.databasePoolMax <= 0) {
+    throw new Error("DATABASE_POOL_MAX is invalid.");
+  }
+
   if (!config.keycrmApiBase) {
     throw new Error("KEYCRM_API_BASE is required.");
   }
@@ -60,12 +68,36 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("TELEGRAM_REQUEST_RETRY_BASE_MS is invalid.");
   }
 
+  if (!Number.isFinite(config.opsAlertTimeoutMs) || config.opsAlertTimeoutMs <= 0) {
+    throw new Error("OPS_ALERT_TIMEOUT_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.opsAlertRetries) || config.opsAlertRetries < 0) {
+    throw new Error("OPS_ALERT_RETRIES is invalid.");
+  }
+
+  if (!Number.isFinite(config.opsAlertRetryBaseMs) || config.opsAlertRetryBaseMs <= 0) {
+    throw new Error("OPS_ALERT_RETRY_BASE_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.opsAlertDedupeWindowMs) || config.opsAlertDedupeWindowMs < 0) {
+    throw new Error("OPS_ALERT_DEDUPE_WINDOW_MS is invalid.");
+  }
+
   if (!Number.isFinite(config.orderQueueConcurrency) || config.orderQueueConcurrency <= 0) {
     throw new Error("ORDER_QUEUE_CONCURRENCY is invalid.");
   }
 
   if (!Number.isFinite(config.orderQueueMaxSize) || config.orderQueueMaxSize <= 0) {
     throw new Error("ORDER_QUEUE_MAX_SIZE is invalid.");
+  }
+
+  if (!Number.isFinite(config.orderQueueMaxAttempts) || config.orderQueueMaxAttempts <= 0) {
+    throw new Error("ORDER_QUEUE_MAX_ATTEMPTS is invalid.");
+  }
+
+  if (!Number.isFinite(config.orderQueueRetryBaseMs) || config.orderQueueRetryBaseMs <= 0) {
+    throw new Error("ORDER_QUEUE_RETRY_BASE_MS is invalid.");
   }
 
   if (!Number.isFinite(config.reactionQueueConcurrency) || config.reactionQueueConcurrency <= 0) {
@@ -76,12 +108,20 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("REACTION_QUEUE_MAX_SIZE is invalid.");
   }
 
+  if (!Number.isFinite(config.reactionQueueMaxAttempts) || config.reactionQueueMaxAttempts <= 0) {
+    throw new Error("REACTION_QUEUE_MAX_ATTEMPTS is invalid.");
+  }
+
+  if (!Number.isFinite(config.reactionQueueRetryBaseMs) || config.reactionQueueRetryBaseMs <= 0) {
+    throw new Error("REACTION_QUEUE_RETRY_BASE_MS is invalid.");
+  }
+
   if (!Number.isFinite(config.queueJobTimeoutMs) || config.queueJobTimeoutMs <= 0) {
     throw new Error("QUEUE_JOB_TIMEOUT_MS is invalid.");
   }
 
-  if (!config.idempotencyStorePath) {
-    throw new Error("IDEMPOTENCY_STORE_PATH is invalid.");
+  if (!Number.isFinite(config.idempotencyMaxEntries) || config.idempotencyMaxEntries <= 0) {
+    throw new Error("IDEMPOTENCY_MAX_ENTRIES is invalid.");
   }
 
   if (!config.productCodeRulesPath) {
@@ -92,8 +132,11 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("REACTION_STATUS_RULES_PATH is invalid.");
   }
 
-  if (!config.telegramMessageMapPath) {
-    throw new Error("TELEGRAM_MESSAGE_MAP_PATH is invalid.");
+  if (
+    !Number.isFinite(config.telegramMessageMapMaxEntries) ||
+    config.telegramMessageMapMaxEntries <= 0
+  ) {
+    throw new Error("TELEGRAM_MESSAGE_MAP_MAX_ENTRIES is invalid.");
   }
 
   if (!config.telegramLegacyClientPath) {
@@ -106,6 +149,22 @@ export function validateConfig(config: AppConfig): void {
 
   if (!config.outputDir) {
     throw new Error("OUTPUT_DIR is invalid.");
+  }
+
+  if (!config.tempDir) {
+    throw new Error("TEMP_DIR is invalid.");
+  }
+
+  if (!Number.isFinite(config.outputRetentionHours) || config.outputRetentionHours <= 0) {
+    throw new Error("OUTPUT_RETENTION_HOURS is invalid.");
+  }
+
+  if (!Number.isFinite(config.tempRetentionHours) || config.tempRetentionHours <= 0) {
+    throw new Error("TEMP_RETENTION_HOURS is invalid.");
+  }
+
+  if (!Number.isFinite(config.cleanupIntervalMs) || config.cleanupIntervalMs <= 0) {
+    throw new Error("CLEANUP_INTERVAL_MS is invalid.");
   }
 
   if (!config.fontPath) {

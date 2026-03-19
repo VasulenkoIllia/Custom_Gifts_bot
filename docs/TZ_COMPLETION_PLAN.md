@@ -22,7 +22,7 @@
 Оновлення станом на Stage D intake:
 - додано `POST /webhook/keycrm` і `POST /webhook/telegram` у TS-сервісі;
 - додано `CrmClient` з `GET /order/{id}` і `PUT /order/{id}` + retry/timeout;
-- додано file-based idempotency для order webhook;
+- додано idempotency в PostgreSQL (`idempotency_keys`) для order webhook;
 - додано queue intake (`order_intake`, `reaction_intake`) замість синхронної обробки в HTTP;
 - додано базові автотести для webhook parser/idempotency/controller.
 
@@ -53,8 +53,16 @@
 Оновлення станом на Stage G Telegram delivery:
 - `order_intake` worker тепер відправляє generated materials у Telegram після PDF pipeline;
 - додано status-gate: відправка лише коли `order.status_id == materialsStatusId` (з rules);
-- додано `TelegramMessageMapStore` для зв'язку `chat/message -> order`;
+- додано PostgreSQL message-map store для зв'язку `chat/message -> order`;
 - message map використовується далі в reaction workflow.
+- додано `OpsAlertService` для технічного чату:
+  - retry/backoff на `sendMessage`;
+  - dedupe-window проти alert spam.
+- додано dead-letter persistence:
+  - PostgreSQL table `dead_letters`.
+- додано failure-status flow:
+  - при `pdf_generation` DLQ ставиться статус `missingFileStatusId` (`40`);
+  - при `telegram_delivery` DLQ ставиться статус `missingTelegramStatusId` (`59`).
 
 Оновлення станом на Stage H Reaction workflow:
 - додано `reaction-status-rules.json` (materials/print/packing workflow);
@@ -63,6 +71,25 @@
   - `2+ ❤️ -> packing status`;
 - rollback свідомо ігнорується (monotonic тільки вперед);
 - додано unit tests на stage resolver і reaction worker.
+- додано anti-flood для reaction webhook:
+  - dedupe key по `chat/message + stage bucket`.
+
+Оновлення станом на Stage I hardening:
+- додано queue retry policy:
+  - `maxAttempts`, `retryBaseMs`, `shouldRetry`;
+- додано queue DLQ callbacks;
+- прибрано файлові state-store реалізації з runtime:
+  - idempotency/message-map/DLQ працюють тільки через PostgreSQL;
+- додано автоматичний storage retention cleanup:
+  - `OUTPUT_RETENTION_HOURS`
+  - `TEMP_RETENTION_HOURS`
+  - `CLEANUP_INTERVAL_MS`
+- додано production docs:
+  - `RUNBOOK`
+  - `WEBHOOK_CHECKLIST`
+  - `STORAGE_RETENTION`
+  - `MANUAL_UAT_CHECKLIST`
+  - `.env.production.example`.
 
 Історично, у попередньому JS-коді вже були/частково були:
 - побудова `layoutPlan` із матеріалами `poster/engraving/sticker`;
@@ -138,8 +165,8 @@
 - `Немає в тг` = `59`
 
 Поточний стан реалізації:
-- в `.env` уже задано `TELEGRAM_REACTION_TARGET_STATUS_ID=22`;
-- це означає, що зараз реакції Telegram уже переводять замовлення в `Друк`.
+- реакції керуються через `config/business-rules/reaction-status-rules.json`;
+- етапи за замовчуванням: `1 ❤️ -> Друк (22)`, `2 ❤️ -> Пакування (7)`.
 
 Що видно з live-структури реального замовлення:
 - базовий товар містить `_tib_design_link_1` і `_customization_image`;

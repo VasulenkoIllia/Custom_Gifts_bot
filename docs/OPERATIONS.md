@@ -1,5 +1,15 @@
 # Production, черги, логування і відмовостійкість
 
+## 0. Поточний стан реалізації
+Вже реалізовано в TS:
+- queue retry policy (`maxAttempts`, `retryBaseMs`, `shouldRetry`);
+- persistent DLQ (PostgreSQL table `dead_letters`);
+- ops-alert повідомлення в окремий Telegram чат (`TELEGRAM_OPS_CHAT_ID`);
+- failure-status flow:
+  - `pdf_generation` -> `missingFileStatusId`;
+  - `telegram_delivery` -> `missingTelegramStatusId`;
+- storage retention cleanup для `OUTPUT_DIR` і `TEMP_DIR`.
+
 ## 1. Як має працювати webhook у production
 - KeyCRM надсилає webhook у receiver.
 - Receiver валідовує запит.
@@ -135,13 +145,16 @@
 Потрібно мати:
 - temp directory
 - generated files directory
-- message mapping storage
-- idempotency storage
-- DLQ storage
+- PostgreSQL storage для:
+  - `telegram_message_map`
+  - `order_workflow_state`
+  - `idempotency_keys`
+  - `dead_letters`
 
-Не можна:
-- тримати чергу тільки в пам'яті
-- покладатися лише на локальний процес без recovery state
+Поточний стан:
+- queue в реалізації процесна (in-memory), а не broker-based;
+- recovery забезпечується повторними webhook з CRM + idempotency в PostgreSQL;
+- після restart сервісу не втрачається операційний state, але активні in-flight job запускаються заново через повторний webhook.
 
 ## 13. Теоретичні проблеми і вузькі місця
 - дубльовані webhook з CRM
@@ -159,7 +172,7 @@
 - один order worker
 - один pdf worker
 - один reaction worker
-- persistent queue/storage
+- in-memory queue + persistent state у PostgreSQL
 - окремий Telegram ops chat
 
 ## 15. Runbook мінімум

@@ -5,6 +5,8 @@ export type QueueJob<TPayload> = {
   key: string;
   payload: TPayload;
   status: QueueJobStatus;
+  attempt: number;
+  maxAttempts: number;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -37,9 +39,28 @@ export type QueueStateEvent<TPayload> = {
   key: string;
   jobId: string;
   status: QueueJobStatus;
+  attempt: number;
+  maxAttempts: number;
+  willRetry: boolean;
+  retryDelayMs: number | null;
   payload: TPayload;
   error?: string;
   stats: QueueStats;
+};
+
+export type QueueDeadLetterEvent<TPayload> = {
+  queue: string;
+  key: string;
+  jobId: string;
+  attempt: number;
+  maxAttempts: number;
+  payload: TPayload;
+  errorType: string;
+  retryable: boolean;
+  failureKind: string | null;
+  error: string;
+  createdAt: number;
+  finishedAt: number;
 };
 
 export type QueueOptions<TPayload> = {
@@ -47,6 +68,10 @@ export type QueueOptions<TPayload> = {
   concurrency: number;
   maxQueueSize: number;
   jobTimeoutMs: number;
+  maxAttempts?: number;
+  retryBaseMs?: number;
+  shouldRetry?: (params: { error: unknown; job: QueueJob<TPayload> }) => boolean;
+  onDeadLetter?: (event: QueueDeadLetterEvent<TPayload>) => void | Promise<void>;
   handler: QueueHandler<TPayload>;
   onStateChange?: (event: QueueStateEvent<TPayload>) => void;
 };

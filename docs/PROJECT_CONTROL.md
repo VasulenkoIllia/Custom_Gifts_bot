@@ -31,6 +31,10 @@
 - [docs/OPERATIONS.md](./OPERATIONS.md)
 - [docs/CONFIGURATION_MODEL.md](./CONFIGURATION_MODEL.md)
 - [docs/LEGACY_REFERENCE.md](./LEGACY_REFERENCE.md)
+- [docs/RUNBOOK.md](./RUNBOOK.md)
+- [docs/WEBHOOK_CHECKLIST.md](./WEBHOOK_CHECKLIST.md)
+- [docs/STORAGE_RETENTION.md](./STORAGE_RETENTION.md)
+- [docs/MANUAL_UAT_CHECKLIST.md](./MANUAL_UAT_CHECKLIST.md)
 
 Правило:
 - щоденна робота ведеться тільки через основну документацію;
@@ -53,12 +57,25 @@
 - `RBG` у SKU підтверджено як реальні артикули;
 - поточний JS-код вважається reference, а не цільовою архітектурою.
 
+## 2.1 Відкладені уточнення
+Ці питання відкладені на пізніше і не блокують поточну реалізацію:
+- multi-poster нумерація в одному order;
+- фіксований/динамічний розмір стікера;
+- фінальна специфіка Spotify code (візуальні деталі);
+- додаткові типи кодів поза QR/Spotify;
+- доля SKU `FriendAppleA5RGB+K`, якого зараз немає в CRM.
+
 ## 3. Основна стратегія реалізації
 - Не доробляти current JS-код як фінальний production baseline.
 - Зберегти його як reference.
 - Нову реалізацію будувати як TypeScript-сервіс.
 - Важку PDF-обробку виконувати через queue/worker, а не в HTTP handler.
 - Всі бізнес-правила виносити в конфіг.
+- Операційний state зберігати тільки в PostgreSQL:
+  - `idempotency_keys`
+  - `telegram_message_map`
+  - `order_workflow_state`
+  - `dead_letters`
 
 ## 4. Активний мінімальний набір документів
 - [docs/PROJECT_CONTROL.md](./PROJECT_CONTROL.md)
@@ -75,6 +92,14 @@
   - [docs/IMPLEMENTATION_STAGES.md](./IMPLEMENTATION_STAGES.md)
 - Production, черги, alerting:
   - [docs/OPERATIONS.md](./OPERATIONS.md)
+- Runbook:
+  - [docs/RUNBOOK.md](./RUNBOOK.md)
+- Webhook checklist:
+  - [docs/WEBHOOK_CHECKLIST.md](./WEBHOOK_CHECKLIST.md)
+- Retention policy:
+  - [docs/STORAGE_RETENTION.md](./STORAGE_RETENTION.md)
+- Manual UAT:
+  - [docs/MANUAL_UAT_CHECKLIST.md](./MANUAL_UAT_CHECKLIST.md)
 - Конфігурація:
   - [docs/CONFIGURATION_MODEL.md](./CONFIGURATION_MODEL.md)
 - Legacy reference:
@@ -154,8 +179,7 @@
 - додано валідацію webhook secret:
   - KeyCRM: `x-keycrm-webhook-secret` / `x-webhook-secret` (якщо `KEYCRM_WEBHOOK_SECRET` заданий);
   - Telegram: `x-telegram-bot-api-secret-token` (якщо `TELEGRAM_REACTION_SECRET_TOKEN` заданий);
-- додано file-based idempotency store:
-  - `storage/files/idempotency/order-webhooks.json`;
+- додано idempotency store в PostgreSQL (`idempotency_keys`);
 - додано queue intake layer:
   - `order_intake` queue;
   - `reaction_intake` queue;
@@ -170,7 +194,7 @@
 Що вже перевірено автоматично:
 - `CrmClient` tests (`GET`/`PUT`, envelope unwrap, request body);
 - `normalizeKeycrmWebhook` parser tests;
-- `FileIdempotencyStore` dedupe/persistence tests;
+- `DbIdempotencyStore` dedupe/persistence tests;
 - `KeycrmWebhookController` duplicate webhook dedupe test;
 - `npm run check` пройдено;
 - `npm run build` пройдено;
@@ -305,11 +329,21 @@
 - `order_intake` worker тепер:
   - обробляє замовлення тільки коли `status_id == materialsStatusId`;
   - після генерації PDF відправляє прев'ю + файли в Telegram;
-  - пише `message_ids` у `TelegramMessageMapStore` для подальшого reaction workflow;
-- додано file-based мапінг повідомлень:
-  - `storage/files/telegram/message-map.json`;
-  - link `message -> order`;
-  - order workflow state для реакцій.
+  - пише `message_ids` у PostgreSQL message-map store для подальшого reaction workflow;
+- додано мапінг повідомлень у PostgreSQL:
+  - `telegram_message_map` (`message -> order`);
+  - `order_workflow_state` (workflow state для реакцій).
+- додано `OpsAlertService`:
+  - алерти в окремий `TELEGRAM_OPS_CHAT_ID`/thread;
+  - dedupe-window для уникнення alert spam;
+  - retry/backoff для `sendMessage`.
+- додано DLQ persistence:
+  - PostgreSQL table `dead_letters`;
+  - автоматичний запис dead-letter подій для `order_intake` і `reaction_intake`.
+- додано failure-status flow через rules:
+  - `missingFileStatusId` (`40`);
+  - `missingTelegramStatusId` (`59`);
+  - статуси ставляться при переході order-job в DLQ.
 
 Програмна перевірка:
 - message payload tests;
@@ -317,7 +351,8 @@
 - partial failure tests.
 
 Що вже перевірено автоматично:
-- `TelegramMessageMapStore` tests;
+- `DbTelegramMessageMapStore` tests;
+- tests на queue retry + DLQ;
 - `npm run check` / `build` / `test` пройдено після інтеграції доставки.
 
 Ручна перевірка:
@@ -325,8 +360,7 @@
 - критична помилка приходить у ops chat.
 
 Що лишається по етапу G:
-- live smoke на тестовому Telegram чаті/треді;
-- додати окремий ops-alert маршрут у технічний чат.
+- live smoke на тестовому Telegram чаті/треді.
 
 ### Етап H. Reaction workflow
 Статус: `in_progress`
@@ -342,13 +376,16 @@
 - додано `config/business-rules/reaction-status-rules.json`;
 - додано `ReactionStatusRules` loader + resolver;
 - `reaction_intake` worker тепер:
-  - знаходить `orderId` по `chatId/messageId` через `TelegramMessageMapStore`;
+  - знаходить `orderId` по `chatId/messageId` через PostgreSQL message-map store;
   - застосовує monotonic stage transitions:
     - `1+ ❤️ -> Друк`;
     - `2+ ❤️ -> Пакування`;
   - ігнорує rollback (меншу кількість hearts після підвищення етапу);
   - викликає `PUT /order/{id}` для зміни `status_id`;
 - додано unit test для reaction worker monotonic transitions.
+- додано anti-flood policy для burst updates:
+  - webhook dedupe key по `chat/message + stage bucket`;
+  - повторні реакції в межах того ж stage не ставляться в роботу повторно.
 
 Програмна перевірка:
 - tests на stage transitions;
@@ -358,17 +395,17 @@
 Що вже перевірено автоматично:
 - tests на `resolveStageForHeartCount`;
 - tests на monotonic `reaction_intake` transitions;
+- tests на stage-bucket dedupe в `TelegramWebhookController`;
 - `npm run check` / `build` / `test` пройдено.
 
 Що лишається по етапу H:
-- live webhook smoke з реальними Telegram reaction update payloads;
-- додати anti-flood/backoff policy для масових reaction bursts.
+- live webhook smoke з реальними Telegram reaction update payloads.
 
 Ручна перевірка:
 - руками проставити реакції і перевірити оновлення статусів у CRM.
 
 ### Етап I. Stress, hardening, production cutover
-Статус: `planned`
+Статус: `in_progress`
 
 Що треба зробити:
 - batch queue tests;
@@ -376,6 +413,19 @@
 - disk/temp cleanup checks;
 - rollout plan;
 - rollback plan.
+
+Що вже зроблено:
+- queue-level retry policy (`maxAttempts`, `retryBaseMs`, `shouldRetry`);
+- dead-letter callbacks + persistent DLQ store;
+- storage retention service:
+  - cleanup `OUTPUT_DIR` за `OUTPUT_RETENTION_HOURS`;
+  - cleanup `TEMP_DIR` за `TEMP_RETENTION_HOURS`;
+  - periodic run за `CLEANUP_INTERVAL_MS`;
+- додано production docs:
+  - [docs/RUNBOOK.md](./RUNBOOK.md)
+  - [docs/WEBHOOK_CHECKLIST.md](./WEBHOOK_CHECKLIST.md)
+  - [docs/STORAGE_RETENTION.md](./STORAGE_RETENTION.md)
+  - `/.env.production.example`
 
 Програмна перевірка:
 - stress tests;
@@ -390,10 +440,6 @@
 ## 6. Що ще не закрито
 - Чи може бути більше одного базового постера в одному замовленні.
 - Чи стікер завжди фіксованого розміру.
-- Що робити при збої генерації або коли Telegram send не вдався:
-  - `Без файлу = 40`
-  - `Немає в тг = 59`
-  - або не чіпати статус.
 - Яка фінальна специфіка Spotify code.
 - Чи є ще типи кодів, крім QR і Spotify code.
 - Що робити з `FriendAppleA5RGB+K`, якого зараз нема в CRM.
@@ -416,11 +462,12 @@
 
 ## 9. Як рухаємось далі
 Поточний наступний крок:
-- Етап F: PDF pipeline.
+- live UAT по Stage F/G/H:
+  - PDF smoke (3 сценарії);
+  - Telegram send і message mapping;
+  - reaction workflow `1❤️/2❤️` в CRM.
+  - виконати checklist:
+    - [docs/MANUAL_UAT_CHECKLIST.md](./MANUAL_UAT_CHECKLIST.md)
 
-Після цього:
-- Етап E
-- Етап F
-- Етап G
-
-Тобто спочатку будуємо основу, а вже потім переносимо важку бізнес-логіку.
+Після UAT:
+- закриття Stage I (stress + production cutover).

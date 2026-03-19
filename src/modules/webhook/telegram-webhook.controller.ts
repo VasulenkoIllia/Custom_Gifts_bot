@@ -10,6 +10,7 @@ type CreateTelegramWebhookControllerParams = {
   reactionQueue: QueueService<ReactionIntakeJobPayload>;
   webhookSecret: string;
   trackedHeartEmojis: string[];
+  reactionStages: number[];
 };
 
 const TELEGRAM_SECRET_HEADERS = ["x-telegram-bot-api-secret-token"];
@@ -19,12 +20,16 @@ export class TelegramWebhookController {
   private readonly reactionQueue: QueueService<ReactionIntakeJobPayload>;
   private readonly webhookSecret: string;
   private readonly trackedHeartEmojis: string[];
+  private readonly reactionStages: number[];
 
   constructor(params: CreateTelegramWebhookControllerParams) {
     this.logger = params.logger;
     this.reactionQueue = params.reactionQueue;
     this.webhookSecret = params.webhookSecret;
     this.trackedHeartEmojis = params.trackedHeartEmojis;
+    this.reactionStages = Array.isArray(params.reactionStages)
+      ? [...params.reactionStages].sort((left, right) => left - right)
+      : [];
   }
 
   async handle(input: WebhookHandleInput): Promise<WebhookHandleResult> {
@@ -50,10 +55,13 @@ export class TelegramWebhookController {
     const errors: Array<{ updateId: number | null; reason: string }> = [];
 
     for (const update of updates) {
-      const enqueueKey =
-        update.updateId !== null
+      const stageBucket = this.resolveStageBucket(update.heartCount);
+      const hasMessageIdentity = Boolean(update.chatId) && update.messageId !== null;
+      const enqueueKey = hasMessageIdentity
+        ? `reaction:${update.chatId}:${update.messageId}:stage:${stageBucket}`
+        : update.updateId !== null
           ? `update:${update.updateId}`
-          : `reaction:${update.chatId ?? "unknown"}:${update.messageId ?? "unknown"}:${update.heartCount ?? "none"}`;
+          : `reaction:unknown:${stageBucket}`;
 
       try {
         const enqueueResult = this.reactionQueue.enqueue({
@@ -109,5 +117,23 @@ export class TelegramWebhookController {
         queue: this.reactionQueue.getStats(),
       },
     };
+  }
+
+  private resolveStageBucket(heartCount: number | null): number {
+    const count = Number.isFinite(heartCount) ? Math.max(0, Math.floor(Number(heartCount))) : 0;
+    if (count <= 0 || this.reactionStages.length === 0) {
+      return 0;
+    }
+
+    let bucket = 0;
+    for (const stageThreshold of this.reactionStages) {
+      if (count >= stageThreshold) {
+        bucket = stageThreshold;
+      } else {
+        break;
+      }
+    }
+
+    return bucket;
   }
 }

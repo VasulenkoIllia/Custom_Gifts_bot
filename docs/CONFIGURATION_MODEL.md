@@ -14,19 +14,31 @@
 ## 3. Що має жити в `.env`
 - `KEYCRM_API_BASE`
 - `KEYCRM_TOKEN`
+- `DATABASE_URL`
+- `DATABASE_POOL_MAX`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TELEGRAM_MESSAGE_THREAD_ID`
 - `TELEGRAM_OPS_CHAT_ID`
 - `TELEGRAM_OPS_THREAD_ID`
+- `OPS_ALERT_TIMEOUT_MS`
+- `OPS_ALERT_RETRIES`
+- `OPS_ALERT_RETRY_BASE_MS`
+- `OPS_ALERT_DEDUPE_WINDOW_MS`
 - `PORT`
 - `OUTPUT_DIR`
 - `TEMP_DIR`
-- `ORDER_WORKER_CONCURRENCY`
-- `PDF_WORKER_CONCURRENCY`
-- `QUEUE_MAX_RETRIES`
-- `QUEUE_RETRY_BASE_MS`
-- `REQUEST_TIMEOUT_MS`
+- `ORDER_QUEUE_CONCURRENCY`
+- `ORDER_QUEUE_MAX_ATTEMPTS`
+- `ORDER_QUEUE_RETRY_BASE_MS`
+- `REACTION_QUEUE_CONCURRENCY`
+- `REACTION_QUEUE_MAX_ATTEMPTS`
+- `REACTION_QUEUE_RETRY_BASE_MS`
+- `IDEMPOTENCY_MAX_ENTRIES`
+- `TELEGRAM_MESSAGE_MAP_MAX_ENTRIES`
+- `OUTPUT_RETENTION_HOURS`
+- `TEMP_RETENTION_HOURS`
+- `CLEANUP_INTERVAL_MS`
 
 ## 4. Що має жити в business config
 - `status_id` для переходів CRM
@@ -39,31 +51,19 @@
 - alert routing rules
 
 ## 5. Мінімальний набір конфіг-файлів
-- `config/business-rules/status-rules.json`
-- `config/business-rules/reaction-rules.json`
+- `config/business-rules/reaction-status-rules.json`
 - `config/business-rules/product-code-rules.json`
 - `config/business-rules/qr-rules.json`
-- `config/business-rules/stand-type-rules.json`
-- `config/business-rules/alert-rules.json`
-- `config/runtime/pipeline-rules.json`
 
-## 6. `status-rules.json`
+## 6. `reaction-status-rules.json`
 Має містити:
-- `materials_status_id`
-- `print_status_id`
-- `packing_status_id`
-- optional:
-  - `layout_status_id`
-  - `downloaded_layout_status_id`
-  - `missing_file_status_id`
-  - `missing_telegram_status_id`
-
-## 7. `reaction-rules.json`
-Має містити:
-- allowed emoji list
+- `materialsStatusId`
 - mapping `heartCount -> statusId`
 - stage order
 - rollback policy
+- optional:
+  - `missingFileStatusId`
+  - `missingTelegramStatusId`
 
 Приклад:
 
@@ -78,14 +78,14 @@
 }
 ```
 
-## 8. `product-code-rules.json`
+## 7. `product-code-rules.json`
 Має містити:
 - exact SKU mapping для special poster codes
 - optional overrides для format
 - optional overrides для stand type
 - optional aliases
 
-## 9. `qr-rules.json`
+## 8. `qr-rules.json`
 Має містити:
 - whitelisted SKU
 - group type
@@ -95,14 +95,16 @@
 - placement per format
 - invalid URL policy
 
-## 10. `pipeline-rules.json`
-Має містити:
-- retry policy
-- PDF timeout
-- max download size
-- temp retention
-- generated files retention
-- alert thresholds
+## 9. Database Tables
+Стан зберігається в PostgreSQL таблицях:
+- `idempotency_keys`
+- `telegram_message_map`
+- `order_workflow_state`
+- `dead_letters`
+
+## 10. Що не зберігаємо у файлах
+- message-map/idempotency/DLQ/workflow-state не зберігаються в JSON/JSONL.
+- локальні директорії (`OUTPUT_DIR`, `TEMP_DIR`) використовуються тільки для PDF/preview артефактів.
 
 ## 11. Правила зміни конфігу
 - Конфіг валідований на старті.

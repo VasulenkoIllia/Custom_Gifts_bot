@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
-import { FileIdempotencyStore } from "../src/modules/orders/order-idempotency";
+import type {
+  IdempotencyEntry,
+  IdempotencyReserveResult,
+  IdempotencyStore,
+} from "../src/modules/orders/order-idempotency";
 import type { OrderIntakeJobPayload } from "../src/modules/queue/queue-jobs";
 import { QueueService } from "../src/modules/queue/queue-service";
 import { KeycrmWebhookController } from "../src/modules/webhook/keycrm-webhook.controller";
@@ -17,20 +18,50 @@ function createNoopLogger(): Logger {
   };
 }
 
-test("KeycrmWebhookController deduplicates duplicate webhook events", async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "cgu-keycrm-webhook-"));
-  const idempotencyPath = path.join(tempDir, "idempotency.json");
+class InMemoryIdempotencyStore implements IdempotencyStore {
+  private readonly keys = new Map<string, IdempotencyEntry>();
 
+  async init(): Promise<void> {
+    // no-op for in-memory test store
+  }
+
+  async reserve(key: string): Promise<IdempotencyReserveResult> {
+    const normalized = String(key ?? "").trim();
+    const existing = this.keys.get(normalized);
+    if (existing) {
+      return {
+        created: false,
+        entry: existing,
+      };
+    }
+
+    const entry: IdempotencyEntry = {
+      key: normalized,
+      createdAt: new Date().toISOString(),
+    };
+    this.keys.set(normalized, entry);
+    return {
+      created: true,
+      entry,
+    };
+  }
+
+  async remove(key: string): Promise<boolean> {
+    return this.keys.delete(String(key ?? "").trim());
+  }
+}
+
+test("KeycrmWebhookController deduplicates duplicate webhook events", async () => {
   const logger = createNoopLogger();
   const queue = new QueueService<OrderIntakeJobPayload>({
     name: "order_intake_test",
     concurrency: 1,
     maxQueueSize: 10,
     jobTimeoutMs: 5_000,
-    handler: async () => undefined,
+      handler: async () => undefined,
   });
 
-  const idempotencyStore = new FileIdempotencyStore(idempotencyPath);
+  const idempotencyStore = new InMemoryIdempotencyStore();
   await idempotencyStore.init();
 
   const controller = new KeycrmWebhookController({
@@ -70,6 +101,4 @@ test("KeycrmWebhookController deduplicates duplicate webhook events", async () =
   assert.equal(firstBody.enqueued, 1);
   assert.equal(secondBody.enqueued, 0);
   assert.equal(secondBody.idempotentDuplicates, 1);
-
-  await fs.rm(tempDir, { recursive: true, force: true });
 });

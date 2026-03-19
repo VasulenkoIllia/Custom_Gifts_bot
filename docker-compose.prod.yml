@@ -1,0 +1,53 @@
+name: custom-gifts-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: custom-gifts-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-custom_gifts_bot}
+      POSTGRES_USER: ${POSTGRES_USER:-custom_gifts}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    volumes:
+      - cgu_prod_postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: custom-gifts-bot:prod
+    container_name: custom-gifts-bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.production
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: ${DATABASE_URL:-postgres://custom_gifts:${POSTGRES_PASSWORD:-change_me}@postgres:5432/custom_gifts_bot}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - cgu_prod_output_data:/app/storage/files/materials
+      - cgu_prod_temp_data:/app/storage/temp
+    networks:
+      - backend
+
+networks:
+  backend:
+
+volumes:
+  cgu_prod_postgres_data:
+  cgu_prod_output_data:
+  cgu_prod_temp_data:

@@ -1,10 +1,14 @@
 import type { CrmClient } from "../modules/crm/crm-client";
+import {
+  isLikelyTransientErrorMessage,
+  OrderProcessingError,
+} from "../modules/errors/worker-errors";
 import type { LayoutPlanBuilder } from "../modules/layout/layout-plan-builder";
 import type { PdfPipelineService } from "../modules/pdf/pdf-pipeline.service";
 import type { OrderIntakeJobPayload } from "../modules/queue/queue-jobs";
 import type { QueueHandler } from "../modules/queue/queue.types";
 import type { TelegramDeliveryService } from "../modules/telegram/telegram-delivery.service";
-import type { TelegramMessageMapStore } from "../modules/telegram/telegram-message-map-store";
+import type { TelegramMessageMapStore } from "../modules/telegram/telegram-message-map.types";
 import type { Logger } from "../observability/logger";
 
 type CreateOrderIntakeWorkerParams = {
@@ -12,7 +16,7 @@ type CreateOrderIntakeWorkerParams = {
   layoutPlanBuilder: LayoutPlanBuilder;
   pdfPipelineService: PdfPipelineService;
   telegramDeliveryService: TelegramDeliveryService;
-  telegramMessageMapStore: TelegramMessageMapStore;
+  telegramMessageMapStore: Pick<TelegramMessageMapStore, "linkMessages">;
   materialsStatusId: number;
   logger: Logger;
 };
@@ -73,19 +77,35 @@ export function createOrderIntakeWorker({
       urgent: layoutPlan.urgent,
     });
 
-    const pdfResult = await pdfPipelineService.generateForOrder({
-      orderId: String(order.id),
-      layoutPlan,
-    });
+    const orderId = String(order.id);
+    let pdfResult;
+    try {
+      pdfResult = await pdfPipelineService.generateForOrder({
+        orderId,
+        layoutPlan,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OrderProcessingError({
+        message: `PDF pipeline exception: ${message}`,
+        orderId,
+        retryable: isLikelyTransientErrorMessage(message),
+        failureKind: "pdf_generation",
+      });
+    }
 
     if (pdfResult.failed.length > 0) {
       const firstFailure = pdfResult.failed[0];
       const firstFailureMessage = firstFailure
         ? `${firstFailure.filename} -> ${firstFailure.message}`
         : "unknown";
-      throw new Error(
-        `PDF pipeline failed for ${pdfResult.failed.length} material(s). First: ${firstFailureMessage}`,
-      );
+      const errorMessage = `PDF pipeline failed for ${pdfResult.failed.length} material(s). First: ${firstFailureMessage}`;
+      throw new OrderProcessingError({
+        message: errorMessage,
+        orderId,
+        retryable: isLikelyTransientErrorMessage(errorMessage),
+        failureKind: "pdf_generation",
+      });
     }
 
     logger.info("order_pdf_pipeline_completed", {
@@ -99,14 +119,25 @@ export function createOrderIntakeWorker({
       new Set([...layoutPlan.notes, ...pdfResult.warnings]),
     );
 
-    const telegramResult = await telegramDeliveryService.sendOrderMaterials({
-      orderId: String(order.id),
-      flags: layoutPlan.flags,
-      warnings: telegramWarnings,
-      qrUrl: layoutPlan.qr.url,
-      previewImages: layoutPlan.previewImages,
-      generatedFiles: pdfResult.generated,
-    });
+    let telegramResult;
+    try {
+      telegramResult = await telegramDeliveryService.sendOrderMaterials({
+        orderId,
+        flags: layoutPlan.flags,
+        warnings: telegramWarnings,
+        qrUrl: layoutPlan.qr.url,
+        previewImages: layoutPlan.previewImages,
+        generatedFiles: pdfResult.generated,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new OrderProcessingError({
+        message: `Telegram delivery failed: ${message}`,
+        orderId,
+        retryable: isLikelyTransientErrorMessage(message),
+        failureKind: "telegram_delivery",
+      });
+    }
 
     const linked = await telegramMessageMapStore.linkMessages({
       orderId: String(order.id),

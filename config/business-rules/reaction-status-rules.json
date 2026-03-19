@@ -1,5 +1,7 @@
 {
   "materialsStatusId": 20,
+  "missingFileStatusId": 40,
+  "missingTelegramStatusId": 59,
   "stages": [
     {
       "heartCount": 1,

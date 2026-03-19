@@ -1,17 +1,161 @@
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import { TelegramMessageMapStore } from "../src/modules/telegram/telegram-message-map-store";
+import type { DbQueryResult, DatabaseClient } from "../src/modules/db/postgres-client";
+import { DbTelegramMessageMapStore } from "../src/modules/telegram/db-telegram-message-map-store";
 
-test("TelegramMessageMapStore links messages and resolves order id", async () => {
-  const tempPath = path.resolve(
-    process.cwd(),
-    "storage/temp/tests/telegram-map/telegram-map-1.json",
-  );
-  await fs.rm(path.dirname(tempPath), { recursive: true, force: true });
+type MessageRow = {
+  chat_id: string;
+  message_id: number;
+  order_id: string;
+  created_at: string;
+  updated_at: string;
+  last_heart_count: number;
+};
 
-  const store = new TelegramMessageMapStore(tempPath, 1000);
+type WorkflowRow = {
+  order_id: string;
+  highest_stage_index: number;
+  applied_status_id: number | null;
+  updated_at: string;
+  last_heart_count: number;
+};
+
+class InMemoryTelegramDb implements DatabaseClient {
+  private readonly messages = new Map<string, MessageRow>();
+  private readonly orderStates = new Map<string, WorkflowRow>();
+  private sequence = 0;
+
+  async query<TRow = Record<string, unknown>>(
+    text: string,
+    params: ReadonlyArray<unknown> = [],
+  ): Promise<DbQueryResult<TRow>> {
+    const sql = text.replace(/\s+/g, " ").trim();
+
+    if (sql.startsWith("INSERT INTO telegram_message_map(")) {
+      const chatId = String(params[0] ?? "").trim();
+      const messageId = Number.parseInt(String(params[1] ?? ""), 10);
+      const orderId = String(params[2] ?? "").trim();
+      const key = `${chatId}:${messageId}`;
+      const now = new Date(Date.now() + this.sequence * 1000).toISOString();
+      this.sequence += 1;
+
+      const existing = this.messages.get(key);
+      this.messages.set(key, {
+        chat_id: chatId,
+        message_id: messageId,
+        order_id: orderId,
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+        last_heart_count: existing?.last_heart_count ?? 0,
+      });
+      return {
+        rows: [],
+        rowCount: 1,
+      };
+    }
+
+    if (sql.startsWith("DELETE FROM telegram_message_map WHERE (chat_id, message_id) IN")) {
+      const maxEntries = Number.parseInt(String(params[0] ?? 0), 10);
+      const ordered = Array.from(this.messages.values()).sort((left, right) =>
+        right.updated_at.localeCompare(left.updated_at),
+      );
+      const keep = new Set(
+        ordered.slice(0, Math.max(0, maxEntries)).map((item) => `${item.chat_id}:${item.message_id}`),
+      );
+      let removed = 0;
+      for (const key of Array.from(this.messages.keys())) {
+        if (!keep.has(key)) {
+          this.messages.delete(key);
+          removed += 1;
+        }
+      }
+      return {
+        rows: [],
+        rowCount: removed,
+      };
+    }
+
+    if (sql.startsWith("SELECT order_id FROM telegram_message_map WHERE chat_id = $1")) {
+      const chatId = String(params[0] ?? "").trim();
+      const messageId = Number.parseInt(String(params[1] ?? ""), 10);
+      const row = this.messages.get(`${chatId}:${messageId}`);
+      return {
+        rows: row ? ([{ order_id: row.order_id }] as TRow[]) : [],
+        rowCount: row ? 1 : 0,
+      };
+    }
+
+    if (sql.startsWith("UPDATE telegram_message_map SET last_heart_count = $3")) {
+      const chatId = String(params[0] ?? "").trim();
+      const messageId = Number.parseInt(String(params[1] ?? ""), 10);
+      const heartCount = Number.parseInt(String(params[2] ?? 0), 10);
+      const key = `${chatId}:${messageId}`;
+      const row = this.messages.get(key);
+      if (!row) {
+        return {
+          rows: [],
+          rowCount: 0,
+        };
+      }
+      const updatedAt = new Date(Date.now() + this.sequence * 1000).toISOString();
+      this.sequence += 1;
+      this.messages.set(key, {
+        ...row,
+        last_heart_count: heartCount,
+        updated_at: updatedAt,
+      });
+      return {
+        rows: [],
+        rowCount: 1,
+      };
+    }
+
+    if (sql.startsWith("SELECT order_id, highest_stage_index, applied_status_id, updated_at, last_heart_count FROM order_workflow_state")) {
+      const orderId = String(params[0] ?? "").trim();
+      const row = this.orderStates.get(orderId);
+      return {
+        rows: row ? ([row] as TRow[]) : [],
+        rowCount: row ? 1 : 0,
+      };
+    }
+
+    if (sql.startsWith("INSERT INTO order_workflow_state(")) {
+      const orderId = String(params[0] ?? "").trim();
+      const highestStageIndex = Number.parseInt(String(params[1] ?? -1), 10);
+      const appliedStatusIdRaw = params[2];
+      const appliedStatusId =
+        Number.isFinite(appliedStatusIdRaw) && Number(appliedStatusIdRaw) > 0
+          ? Number(appliedStatusIdRaw)
+          : null;
+      const lastHeartCount = Number.parseInt(String(params[3] ?? 0), 10);
+      const updatedAt = new Date(Date.now() + this.sequence * 1000).toISOString();
+      this.sequence += 1;
+
+      const row: WorkflowRow = {
+        order_id: orderId,
+        highest_stage_index: highestStageIndex,
+        applied_status_id: appliedStatusId,
+        updated_at: updatedAt,
+        last_heart_count: lastHeartCount,
+      };
+      this.orderStates.set(orderId, row);
+      return {
+        rows: [row as TRow],
+        rowCount: 1,
+      };
+    }
+
+    throw new Error(`Unsupported SQL in test double: ${sql}`);
+  }
+
+  async close(): Promise<void> {
+    // no-op for in-memory test DB
+  }
+}
+
+test("DbTelegramMessageMapStore links messages and resolves order id", async () => {
+  const db = new InMemoryTelegramDb();
+  const store = new DbTelegramMessageMapStore(db, 1000);
   await store.init();
   await store.linkMessages({
     orderId: "1001",
@@ -25,15 +169,17 @@ test("TelegramMessageMapStore links messages and resolves order id", async () =>
   assert.equal(by502, "1001");
 });
 
-test("TelegramMessageMapStore stores monotonic order workflow state", async () => {
-  const tempPath = path.resolve(
-    process.cwd(),
-    "storage/temp/tests/telegram-map/telegram-map-2.json",
-  );
-  await fs.rm(path.dirname(tempPath), { recursive: true, force: true });
-
-  const store = new TelegramMessageMapStore(tempPath, 1000);
+test("DbTelegramMessageMapStore stores workflow state and heart count", async () => {
+  const db = new InMemoryTelegramDb();
+  const store = new DbTelegramMessageMapStore(db, 1000);
   await store.init();
+
+  await store.linkMessages({
+    orderId: "2002",
+    chatId: "-100200",
+    messageIds: [601],
+  });
+  await store.markMessageHeartCount("-100200", 601, 2);
 
   await store.upsertOrderState({
     orderId: "2002",
@@ -45,6 +191,7 @@ test("TelegramMessageMapStore stores monotonic order workflow state", async () =
   const first = await store.getOrderState("2002");
   assert.equal(first?.highestStageIndex, 0);
   assert.equal(first?.appliedStatusId, 22);
+  assert.equal(first?.lastHeartCount, 1);
 
   await store.upsertOrderState({
     orderId: "2002",
@@ -56,4 +203,5 @@ test("TelegramMessageMapStore stores monotonic order workflow state", async () =
   const second = await store.getOrderState("2002");
   assert.equal(second?.highestStageIndex, 1);
   assert.equal(second?.appliedStatusId, 7);
+  assert.equal(second?.lastHeartCount, 2);
 });
