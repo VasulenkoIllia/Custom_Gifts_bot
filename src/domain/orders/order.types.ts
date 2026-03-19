@@ -14,7 +14,7 @@ export type KeycrmOrderProduct = {
   sku?: string;
   name?: string;
   comment?: string;
-  picture?: string;
+  picture?: unknown;
   properties?: KeycrmProductProperty[];
   offer?: KeycrmOffer;
 };

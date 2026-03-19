@@ -26,6 +26,44 @@
 - додано queue intake (`order_intake`, `reaction_intake`) замість синхронної обробки в HTTP;
 - додано базові автотести для webhook parser/idempotency/controller.
 
+Оновлення станом на Stage E layout/naming:
+- додано `layout-plan-builder` у TS;
+- додано data-driven `product-code-rules.json` для special SKU;
+- реалізовано naming `poster/engraving/sticker` за ТЗ;
+- реалізовано fixed ordering `poster -> engraving -> sticker`;
+- реалізовано `urgent -> _T`;
+- реалізовано пріоритет `SKU -> properties -> fallback` для формату;
+- реалізовано `+K/speaker -> K` для stand type;
+- додано автотести по ключових naming-кейсах.
+
+Оновлення станом на Stage F PDF pipeline:
+- додано TS `PdfPipelineService`, який інтегрує `layoutPlan` з перевіреним legacy PDF generator;
+- генерація poster/engraving/sticker викликається з `order_intake` worker;
+- підключено white recolor + CMYK у pipeline (через legacy модуль);
+- додано SKU-specific QR rules (`config/business-rules/qr-rules.json`) і `QR_RULES_PATH`;
+- додано per-poster decision engine:
+  - `none` для SKU поза whitelist;
+  - `qr` для whitelist SKU;
+  - `spotify_code` для Spotify SKU + Spotify URL;
+- додано TS QR/Spotify post-processing поверх згенерованого poster PDF;
+- після TS QR/Spotify embed для `CMYK` виконується повторна CMYK-конверсія постера;
+- додано pipeline-конфіг у `.env`/`AppConfig` (шрифти, output, color-space, QR fallback placement);
+- додано тест на mapping `LayoutPlan -> legacy generator payload`.
+
+Оновлення станом на Stage G Telegram delivery:
+- `order_intake` worker тепер відправляє generated materials у Telegram після PDF pipeline;
+- додано status-gate: відправка лише коли `order.status_id == materialsStatusId` (з rules);
+- додано `TelegramMessageMapStore` для зв'язку `chat/message -> order`;
+- message map використовується далі в reaction workflow.
+
+Оновлення станом на Stage H Reaction workflow:
+- додано `reaction-status-rules.json` (materials/print/packing workflow);
+- `reaction_intake` worker оновлює CRM статуси за порогами hearts:
+  - `1+ ❤️ -> print status`;
+  - `2+ ❤️ -> packing status`;
+- rollback свідомо ігнорується (monotonic тільки вперед);
+- додано unit tests на stage resolver і reaction worker.
+
 Історично, у попередньому JS-коді вже були/частково були:
 - побудова `layoutPlan` із матеріалами `poster/engraving/sticker`;
 - базовий неймінг `CGU_<code>_<order>_<index>_<total>[_T]`;

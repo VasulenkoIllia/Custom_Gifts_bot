@@ -1,0 +1,175 @@
+{
+  "profiles": [
+    {
+      "id": "spotify",
+      "skus": [
+        "SpotifyA5Wood",
+        "SpotifyA5WoodWW",
+        "SpotifyA5WoodMultiWW",
+        "SpotifyA5WoodRGB",
+        "SpotifyA5WoodRBGSpeaker",
+        "SpotifyA4Wood",
+        "SpotifyA4WoodWW",
+        "SpotifyA4WoodMultiWW",
+        "SpotifyA4WoodRGB",
+        "SpotifyA4WoodRBGSpeaker"
+      ],
+      "qrPlacementByFormat": {
+        "A5": { "mode": "right_bottom", "widthMm": 20, "heightMm": 20, "rightMm": 20, "bottomMm": 70 },
+        "A4": { "mode": "right_bottom", "widthMm": 30, "heightMm": 30, "rightMm": 28, "bottomMm": 90 }
+      },
+      "spotifyPlacementByFormat": {
+        "A5": { "mode": "bottom_center", "widthMm": 80, "heightMm": 20, "bottomMm": 11 },
+        "A4": { "mode": "bottom_center", "widthMm": 110, "heightMm": 25, "bottomMm": 11 }
+      }
+    },
+    {
+      "id": "telegram",
+      "skus": [
+        "TelegramA5Wood",
+        "TelegramA5WoodWW",
+        "TelegramA5WoodMultiWW",
+        "TelegramA5WoodRGB",
+        "TelegramA5WoodRBGSpeaker",
+        "TelegramA4Wood",
+        "TelegramA4WoodWW",
+        "TelegramA4WoodMultiWW",
+        "TelegramA4WoodRGB",
+        "TelegramA4WoodRBGSpeaker"
+      ],
+      "qrPlacementByFormat": {
+        "A5": { "mode": "right_bottom", "widthMm": 20, "heightMm": 20, "rightMm": 8, "bottomMm": 42 },
+        "A4": { "mode": "right_bottom", "widthMm": 30, "heightMm": 30, "rightMm": 12, "bottomMm": 63 }
+      }
+    },
+    {
+      "id": "soundcloud",
+      "skus": [
+        "SoundCloudA5Wood",
+        "SoundCloudA5WoodWW",
+        "SoundCloudA5WoodMultiWW",
+        "SoundCloudA5WoodRGB",
+        "SoundCloudA5WoodRBGSpeaker",
+        "SoundCloudA4Wood",
+        "SoundCloudA4WoodWW",
+        "SoundCloudA4WoodMultiWW",
+        "SoundCloudA4WoodRGB",
+        "SoundCloudA4WoodRBGSpeaker"
+      ],
+      "qrPlacementByFormat": {
+        "A5": { "mode": "right_bottom", "widthMm": 15, "heightMm": 15, "rightMm": 7, "bottomMm": 51 },
+        "A4": { "mode": "right_bottom", "widthMm": 25, "heightMm": 25, "rightMm": 9, "bottomMm": 70 }
+      }
+    },
+    {
+      "id": "youtube",
+      "skus": [
+        "YouTubeA5Wood",
+        "YouTubeA5WoodWW",
+        "YouTubeA5WoodMultiWW",
+        "YouTubeA5WoodRGB",
+        "YouTubeA5WoodRBGSpeaker",
+        "YouTubeA4Wood",
+        "YouTubeA4WoodWW",
+        "YouTubeA4WoodMultiWW",
+        "YouTubeA4WoodRGB",
+        "YouTubeA4WoodRBGSpeaker"
+      ],
+      "qrPlacementByFormat": {
+        "A5": { "mode": "bottom_center", "widthMm": 17, "heightMm": 17, "bottomMm": 10 },
+        "A4": { "mode": "bottom_center", "widthMm": 25, "heightMm": 25, "bottomMm": 15 }
+      }
+    },
+    {
+      "id": "photo_poster",
+      "skus": [
+        "PhotoPosterA5Wood",
+        "PhotoPosterA5WoodWW",
+        "PhotoPosterA5WoodMultiWW",
+        "PhotoPosterA5WoodRGB",
+        "PhotoPosterA4Wood",
+        "PhotoPosterA4WoodWW",
+        "PhotoPosterA4WoodMultiWW",
+        "PhotoPosterA4WoodRGB"
+      ],
+      "qrPlacementByFormat": {
+        "A5": { "mode": "right_bottom", "widthMm": 15, "heightMm": 15, "rightMm": 7, "bottomMm": 10 },
+        "A4": { "mode": "right_bottom", "widthMm": 18, "heightMm": 18, "rightMm": 9, "bottomMm": 11 }
+      }
+    },
+    {
+      "id": "apple",
+      "skus": [
+        "AppleA5Wood",
+        "AppleA5WoodWW",
+        "AppleA5WoodMultiWW",
+        "AppleA5WoodRGB",
+        "AppleA5WoodRBGSpeaker",
+        "MomAppleA5Wood",
+        "MomAppleA5WoodWW",
+        "MomAppleA5WoodMultiWW",
+        "MomAppleA5WoodRBG",
+        "MomAppleA5WoodRBGSpeaker",
+        "AppleGrandpaA5Wood",
+        "AppleGrandpaA5WoodWW",
+        "AppleGrandpaA5WoodRBG",
+        "AppleGrandpaA5WoodRBGSpeaker",
+        "AppleGrandpaA5WoodMultiWW",
+        "AppleClassmatesA5Wood",
+        "AppleClassmatesA5WoodWW",
+        "AppleClassmatesA5WoodMultiWW",
+        "AppleClassmatesA5WoodRBG",
+        "AppleClassmatesA5WoodRBGSpeaker",
+        "AppleFriendsA5W",
+        "AppleFriendsA5WW",
+        "AppleFriendsA5RGB",
+        "AppleFriendsA5RGB+K",
+        "AppleFriendsA5MultiWW",
+        "AppleGrannyA5Wood",
+        "AppleGrannyA5WoodWW",
+        "AppleGrannyA5WoodRBG",
+        "AppleGrannyA5WoodRBGSpeaker",
+        "AppleGrannyA5WoodMultiWW",
+        "FriendAppleA5W",
+        "FriendAppleA5WW",
+        "FriendAppleA5RGB",
+        "FriendAppleA5RGB+K",
+        "FriendAppleA5MultiWW",
+        "AppleA4Wood",
+        "AppleA4WoodWW",
+        "AppleA4WoodMultiWW",
+        "AppleA4WoodRGB",
+        "AppleA4WoodRBGSpeaker",
+        "FriendAppleA4W",
+        "FriendAppleA4WW",
+        "FriendAppleA4RGB",
+        "FriendAppleA4RGB+K",
+        "FriendAppleA4MultiWW",
+        "AppleFriendsA4W",
+        "AppleFriendsA4WW",
+        "AppleFriendsA4RGB",
+        "AppleFriendsA4RGB+K",
+        "AppleFriendsA4MultiWW",
+        "AppleClassmatesA4Wood",
+        "AppleClassmatesA4WoodWW",
+        "AppleClassmatesA4WoodMultiWW",
+        "AppleClassmatesA4WoodRBG",
+        "AppleClassmatesA4WoodRBGSpeaker",
+        "MomAppleA4Wood",
+        "MomAppleA4WoodWW",
+        "MomAppleA4WoodMultiWW",
+        "MomAppleA4WoodRBG",
+        "MomAppleA4WoodRBGSpeaker",
+        "AppleGrandpaA4Wood",
+        "AppleGrandpaA4WoodWW",
+        "AppleGrandpaA4WoodRBG",
+        "AppleGrandpaA4WoodRBGSpeaker",
+        "AppleGrandpaA4WoodMultiWW"
+      ],
+      "qrPlacementByFormat": {
+        "A5": { "mode": "right_bottom", "widthMm": 18, "heightMm": 18, "rightMm": 15, "bottomMm": 65 },
+        "A4": { "mode": "right_bottom", "widthMm": 25, "heightMm": 25, "rightMm": 25, "bottomMm": 98 }
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "materialsStatusId": 20,
+  "stages": [
+    {
+      "heartCount": 1,
+      "statusId": 22,
+      "code": "PRINT"
+    },
+    {
+      "heartCount": 2,
+      "statusId": 7,
+      "code": "PACKING"
+    }
+  ],
+  "rollback": "ignore"
+}

@@ -17,6 +17,14 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("KEYCRM_TOKEN is required.");
   }
 
+  if (!config.telegramBotToken) {
+    throw new Error("TELEGRAM_BOT_TOKEN is required.");
+  }
+
+  if (!config.telegramChatId) {
+    throw new Error("TELEGRAM_CHAT_ID is required.");
+  }
+
   if (!Array.isArray(config.keycrmOrderInclude) || config.keycrmOrderInclude.length === 0) {
     throw new Error("KEYCRM_ORDER_INCLUDE is invalid.");
   }
@@ -35,6 +43,21 @@ export function validateConfig(config: AppConfig): void {
 
   if (!Number.isFinite(config.keycrmRequestRetryBaseMs) || config.keycrmRequestRetryBaseMs <= 0) {
     throw new Error("KEYCRM_REQUEST_RETRY_BASE_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.telegramRequestTimeoutMs) || config.telegramRequestTimeoutMs <= 0) {
+    throw new Error("TELEGRAM_REQUEST_TIMEOUT_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.telegramRequestRetries) || config.telegramRequestRetries < 0) {
+    throw new Error("TELEGRAM_REQUEST_RETRIES is invalid.");
+  }
+
+  if (
+    !Number.isFinite(config.telegramRequestRetryBaseMs) ||
+    config.telegramRequestRetryBaseMs <= 0
+  ) {
+    throw new Error("TELEGRAM_REQUEST_RETRY_BASE_MS is invalid.");
   }
 
   if (!Number.isFinite(config.orderQueueConcurrency) || config.orderQueueConcurrency <= 0) {
@@ -59,5 +82,77 @@ export function validateConfig(config: AppConfig): void {
 
   if (!config.idempotencyStorePath) {
     throw new Error("IDEMPOTENCY_STORE_PATH is invalid.");
+  }
+
+  if (!config.productCodeRulesPath) {
+    throw new Error("PRODUCT_CODE_RULES_PATH is invalid.");
+  }
+
+  if (!config.reactionStatusRulesPath) {
+    throw new Error("REACTION_STATUS_RULES_PATH is invalid.");
+  }
+
+  if (!config.telegramMessageMapPath) {
+    throw new Error("TELEGRAM_MESSAGE_MAP_PATH is invalid.");
+  }
+
+  if (!config.telegramLegacyClientPath) {
+    throw new Error("TELEGRAM_LEGACY_CLIENT_PATH is invalid.");
+  }
+
+  if (!config.qrRulesPath) {
+    throw new Error("QR_RULES_PATH is invalid.");
+  }
+
+  if (!config.outputDir) {
+    throw new Error("OUTPUT_DIR is invalid.");
+  }
+
+  if (!config.fontPath) {
+    throw new Error("FONT_PATH is invalid.");
+  }
+
+  if (!config.pdfLegacyModulePath) {
+    throw new Error("PDF_LEGACY_MODULE_PATH is invalid.");
+  }
+
+  if (!["RGB", "CMYK"].includes(config.pdfColorSpace)) {
+    throw new Error("PDF_COLOR_SPACE is invalid.");
+  }
+
+  if (!Number.isFinite(config.pdfStickerSizeMm) || config.pdfStickerSizeMm <= 0) {
+    throw new Error("STICKER_SIZE_MM is invalid.");
+  }
+
+  if (!/^[0-9A-Fa-f]{6}$/.test(config.pdfOffWhiteHex)) {
+    throw new Error("OFFWHITE_HEX is invalid.");
+  }
+
+  if (!Number.isFinite(config.pdfRasterizeDpi) || config.pdfRasterizeDpi <= 0) {
+    throw new Error("RASTERIZE_DPI is invalid.");
+  }
+
+  if (!Number.isFinite(config.qrA5RightMm) || config.qrA5RightMm <= 0) {
+    throw new Error("QR_A5_RIGHT_MM is invalid.");
+  }
+
+  if (!Number.isFinite(config.qrA5BottomMm) || config.qrA5BottomMm <= 0) {
+    throw new Error("QR_A5_BOTTOM_MM is invalid.");
+  }
+
+  if (!Number.isFinite(config.qrA5SizeMm) || config.qrA5SizeMm <= 0) {
+    throw new Error("QR_A5_SIZE_MM is invalid.");
+  }
+
+  if (!Number.isFinite(config.qrA4RightMm) || config.qrA4RightMm <= 0) {
+    throw new Error("QR_A4_RIGHT_MM is invalid.");
+  }
+
+  if (!Number.isFinite(config.qrA4BottomMm) || config.qrA4BottomMm <= 0) {
+    throw new Error("QR_A4_BOTTOM_MM is invalid.");
+  }
+
+  if (!Number.isFinite(config.qrA4SizeMm) || config.qrA4SizeMm <= 0) {
+    throw new Error("QR_A4_SIZE_MM is invalid.");
   }
 }
