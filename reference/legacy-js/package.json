@@ -1,0 +1,21 @@
+{
+  "name": "Custom_Gifts_bot",
+  "version": "1.0.0",
+  "description": "KeyCRM webhook processor for Custom Gifts bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test:order": "node index.js",
+    "generate:order": "node index.js --generate",
+    "send:order": "node index.js --generate --send-telegram",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "private": true,
+  "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "emoji-datasource-apple": "^16.0.0",
+    "pdf-lib": "^1.17.1",
+    "pngjs": "^7.0.0",
+    "qrcode": "^1.5.4"
+  }
+}

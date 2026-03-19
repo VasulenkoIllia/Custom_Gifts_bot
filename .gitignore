@@ -1,0 +1,10 @@
+.env
+node_modules/
+npm-debug.log*
+outputs/
+.DS_Store
+.idea/
+dist/
+coverage/
+storage/temp/
+.tmp-test-dist/

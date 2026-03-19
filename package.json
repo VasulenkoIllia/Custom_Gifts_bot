@@ -1,0 +1,22 @@
+{
+  "name": "custom-gifts-bot",
+  "version": "0.1.0",
+  "description": "TypeScript rewrite bootstrap for the Custom Gifts production bot",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "tsc -p tsconfig.test.json && node --test .tmp-test-dist/tests/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.2"
+  }
+}

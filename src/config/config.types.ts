@@ -1,0 +1,22 @@
+export type AppConfig = {
+  host: string;
+  port: number;
+  projectPhase: "stage_d_intake";
+  requestBodyLimitBytes: number;
+  keycrmApiBase: string;
+  keycrmToken: string;
+  keycrmOrderInclude: string[];
+  keycrmRequestTimeoutMs: number;
+  keycrmRequestRetries: number;
+  keycrmRequestRetryBaseMs: number;
+  keycrmWebhookSecret: string;
+  telegramBotToken: string;
+  telegramChatId: string;
+  telegramReactionSecretToken: string;
+  orderQueueConcurrency: number;
+  orderQueueMaxSize: number;
+  reactionQueueConcurrency: number;
+  reactionQueueMaxSize: number;
+  queueJobTimeoutMs: number;
+  idempotencyStorePath: string;
+};
