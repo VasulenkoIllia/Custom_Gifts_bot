@@ -214,6 +214,30 @@ PGPASSWORD=custom_gifts psql -h 127.0.0.1 -p 5433 -U custom_gifts -d custom_gift
 8. Перезапуск після оновлення коду:
    - `docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build receiver order-worker reaction-worker`
 
+Примітки:
+- production image already includes `tzdata`, `ghostscript` і compiled `dist/scripts/*`;
+- app services run with `init: true`, що важливо для дочірніх процесів PDF pipeline;
+- operational scripts on the server should be executed from the container through `npm run ...`, not through `tsx src/...`.
+
+### 2.2.1 Production ops/test commands from the container
+Snapshot statuses:
+- `docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver npm run test:orders:snapshot -- --order-ids=29068,29069`
+
+Set test status:
+- `docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver npm run test:orders:set-status -- --order-ids=29068 --status-id=20`
+
+Manual order trigger:
+- `docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver npm run test:order:trigger -- --order-id=29068`
+
+Reset one order:
+- `docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver npm run test:orders:reset-state -- --order-ids=29068 --include-history`
+
+Reset whole regression set:
+- `docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver npm run test:orders:reset-state -- --include-history`
+
+Restore statuses:
+- `docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver npm run test:orders:restore -- --snapshot=artifacts/order-status-snapshots/<snapshot-file>.json`
+
 ### 2.3 Production webhook values
 - KeyCRM webhook URL:
   `https://<APP_DOMAIN>/webhook/keycrm?secret=<KEYCRM_WEBHOOK_SECRET>`
@@ -303,7 +327,9 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
    - idempotency, message-map і DLQ зберігаються в PostgreSQL;
    - обробка продовжується з нових webhook подій.
 2. Якщо згенеровані файли накопичились:
-   - retention-cleanup працює автоматично за `OUTPUT_RETENTION_HOURS` і `TEMP_RETENTION_HOURS`.
+   - retention-cleanup працює автоматично за `OUTPUT_RETENTION_HOURS` і `TEMP_RETENTION_HOURS`;
+   - фінальні PDF не видаляються одразу після відправки в Telegram, а очищуються по retention-політиці;
+   - технічні temp-артефакти додатково чистяться всередині PDF pipeline.
 
 ## 6. Rollback
 1. Зупинити поточний процес.
