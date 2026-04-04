@@ -14,10 +14,11 @@ RUN npm run build
 FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    TZ=Europe/Kyiv
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ghostscript ca-certificates \
+  && apt-get install -y --no-install-recommends ghostscript ca-certificates tzdata \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./

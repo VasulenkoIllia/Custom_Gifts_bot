@@ -5,6 +5,7 @@ x-app-base: &app-base
     context: .
     dockerfile: Dockerfile
   image: custom-gifts-bot:prod
+  init: true
   restart: unless-stopped
   depends_on:
     postgres:
