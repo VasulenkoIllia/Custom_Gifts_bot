@@ -1,5 +1,7 @@
 export type QueueJobStatus = "queued" | "running" | "completed" | "failed";
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export type QueueJob<TPayload> = {
   id: string;
   key: string;
@@ -33,6 +35,11 @@ export type QueueStats = {
 };
 
 export type QueueHandler<TPayload> = (job: QueueJob<TPayload>) => Promise<void>;
+
+export type QueueProducer<TPayload> = {
+  enqueue: (input: QueueEnqueueInput<TPayload>) => MaybePromise<QueueEnqueueResult>;
+  getStats: () => MaybePromise<QueueStats>;
+};
 
 export type QueueStateEvent<TPayload> = {
   queue: string;

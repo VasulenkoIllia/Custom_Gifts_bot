@@ -18,6 +18,8 @@ export type ProductCodeRules = {
     qrFlag: string[];
     qrUrl: string[];
     livePhotoFlag: string[];
+    manualA6Flag: string[];
+    keychainFlag: string[];
   };
 };
 
@@ -37,6 +39,8 @@ const DEFAULT_PROPERTY_NAMES: ProductCodeRules["propertyNames"] = {
   qrFlag: ["QR-код", "QR код", "QR code"],
   qrUrl: ["Посилання до QR-коду", "Посилання до QR коду", "QR link", "Link to QR"],
   livePhotoFlag: ["Live Photo", "Live photo"],
+  manualA6Flag: ["A6", "А6"],
+  keychainFlag: ["Брелок", "Keychain"],
 };
 
 function normalizeSkuKey(sku: string): string {
@@ -115,6 +119,12 @@ function normalizeRules(raw: unknown): ProductCodeRules {
     livePhotoFlag: Array.isArray(propertyNamesRaw.livePhotoFlag)
       ? propertyNamesRaw.livePhotoFlag.map(String)
       : DEFAULT_PROPERTY_NAMES.livePhotoFlag,
+    manualA6Flag: Array.isArray(propertyNamesRaw.manualA6Flag)
+      ? propertyNamesRaw.manualA6Flag.map(String)
+      : DEFAULT_PROPERTY_NAMES.manualA6Flag,
+    keychainFlag: Array.isArray(propertyNamesRaw.keychainFlag)
+      ? propertyNamesRaw.keychainFlag.map(String)
+      : DEFAULT_PROPERTY_NAMES.keychainFlag,
   };
 
   return {

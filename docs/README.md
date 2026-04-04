@@ -12,6 +12,14 @@
   - єдиний master-plan для реалізації, контролю, тестування і поточного статусу.
 - [docs/TZ_COMPLETION_PLAN.md](./TZ_COMPLETION_PLAN.md)
   - джерело фактів: ТЗ, API-підтвердження, SKU-аудит, відкриті питання.
+- [docs/TZ_ADDENDUM_PLAN.md](./TZ_ADDENDUM_PLAN.md)
+  - додаткові вимоги після стартового ТЗ (гілки Telegram, пересилання, оновлений reaction-flow).
+- [docs/TZ_ASSUMPTIONS.md](./TZ_ASSUMPTIONS.md)
+  - decision-log по fallback-логіці, warning-поведінці і тимчасових бізнес-компромісах.
+- [docs/REGRESSION_ORDER_OPEN_QUESTIONS.md](./REGRESSION_ORDER_OPEN_QUESTIONS.md)
+  - список відкритих питань і неоднозначностей по тестових regression-замовленнях.
+- [docs/REGRESSION_ORDER_EXPECTED_VS_ACTUAL.md](./REGRESSION_ORDER_EXPECTED_VS_ACTUAL.md)
+  - звірка по regression-замовленнях: що очікується за бізнес-логікою і що фактично дає dry-run.
 - [docs/CUSTOMER_BRIEF.md](./CUSTOMER_BRIEF.md)
   - короткий brief для замовника.
 
@@ -52,13 +60,16 @@
 - Для щоденної роботи використовувати лише:
   - [docs/PROJECT_CONTROL.md](./PROJECT_CONTROL.md)
   - [docs/TZ_COMPLETION_PLAN.md](./TZ_COMPLETION_PLAN.md)
+  - [docs/TZ_ADDENDUM_PLAN.md](./TZ_ADDENDUM_PLAN.md)
+  - [docs/TZ_ASSUMPTIONS.md](./TZ_ASSUMPTIONS.md)
   - [docs/CUSTOMER_BRIEF.md](./CUSTOMER_BRIEF.md)
 - Решту документів відкривати тільки коли потрібна деталізація по архітектурі, operations, конфігу або legacy reference.
 
 ## Робочі принципи
 - Секрети і середовище зберігаються в `.env`.
-- Бізнес-правила мають бути винесені в окремі config-файли.
-- Операційний state (idempotency, message-map, workflow-state, DLQ) зберігається тільки в PostgreSQL.
+- Змінні бізнес-правила workflow/routing зберігаються в PostgreSQL, а великі статичні SKU/QR rules лишаються у versioned config-файлах.
+- `reaction-status-rules.json` і `TELEGRAM_*` routing env використовуються як bootstrap seed для першого заповнення БД.
+- Операційний state і DB-backed config зберігаються тільки в PostgreSQL.
 - Локальні файли використовуються лише для PDF/preview артефактів і тимчасових даних пайплайна.
 - Потік обробки має бути idempotent, queue-driven і відмовостійким.
 - Всі критичні проблеми мають логуватись і дублюватись у Telegram ops-чат.

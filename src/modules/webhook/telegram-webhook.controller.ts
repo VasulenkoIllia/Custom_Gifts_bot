@@ -1,35 +1,40 @@
 import type { Logger } from "../../observability/logger";
+import {
+  resolveStageForReactionCounts,
+  type ReactionStageRule,
+} from "../reactions/reaction-status-rules";
 import type { ReactionIntakeJobPayload } from "../queue/queue-jobs";
-import { QueueOverflowError, QueueService } from "../queue/queue-service";
+import { QueueOverflowError } from "../queue/db-queue.service";
+import type { QueueProducer } from "../queue/queue.types";
 import { normalizeTelegramUpdates } from "./telegram-webhook-payload";
 import { validateWebhookSecret } from "./webhook-auth";
 import type { WebhookHandleInput, WebhookHandleResult } from "./webhook.types";
 
 type CreateTelegramWebhookControllerParams = {
   logger: Logger;
-  reactionQueue: QueueService<ReactionIntakeJobPayload>;
+  reactionQueue: QueueProducer<ReactionIntakeJobPayload>;
   webhookSecret: string;
-  trackedHeartEmojis: string[];
-  reactionStages: number[];
+  trackedEmojis: string[];
+  reactionStages: ReactionStageRule[];
 };
 
 const TELEGRAM_SECRET_HEADERS = ["x-telegram-bot-api-secret-token"];
 
 export class TelegramWebhookController {
   private readonly logger: Logger;
-  private readonly reactionQueue: QueueService<ReactionIntakeJobPayload>;
+  private readonly reactionQueue: QueueProducer<ReactionIntakeJobPayload>;
   private readonly webhookSecret: string;
-  private readonly trackedHeartEmojis: string[];
-  private readonly reactionStages: number[];
+  private readonly trackedEmojis: string[];
+  private readonly reactionStages: ReactionStageRule[];
 
   constructor(params: CreateTelegramWebhookControllerParams) {
     this.logger = params.logger;
     this.reactionQueue = params.reactionQueue;
     this.webhookSecret = params.webhookSecret;
-    this.trackedHeartEmojis = params.trackedHeartEmojis;
-    this.reactionStages = Array.isArray(params.reactionStages)
-      ? [...params.reactionStages].sort((left, right) => left - right)
+    this.trackedEmojis = Array.isArray(params.trackedEmojis)
+      ? params.trackedEmojis.map((item) => String(item ?? "").trim()).filter(Boolean)
       : [];
+    this.reactionStages = Array.isArray(params.reactionStages) ? [...params.reactionStages] : [];
   }
 
   async handle(input: WebhookHandleInput): Promise<WebhookHandleResult> {
@@ -49,13 +54,13 @@ export class TelegramWebhookController {
       };
     }
 
-    const updates = normalizeTelegramUpdates(input.payload, this.trackedHeartEmojis);
+    const updates = normalizeTelegramUpdates(input.payload, this.trackedEmojis);
     let enqueued = 0;
     let deduplicated = 0;
     const errors: Array<{ updateId: number | null; reason: string }> = [];
 
     for (const update of updates) {
-      const stageBucket = this.resolveStageBucket(update.heartCount);
+      const stageBucket = this.resolveStageBucket(update.emojiCounts, update.heartCount);
       const hasMessageIdentity = Boolean(update.chatId) && update.messageId !== null;
       const enqueueKey = hasMessageIdentity
         ? `reaction:${update.chatId}:${update.messageId}:stage:${stageBucket}`
@@ -64,13 +69,14 @@ export class TelegramWebhookController {
           : `reaction:unknown:${stageBucket}`;
 
       try {
-        const enqueueResult = this.reactionQueue.enqueue({
+        const enqueueResult = await this.reactionQueue.enqueue({
           key: enqueueKey,
           payload: {
             updateId: update.updateId,
             chatId: update.chatId,
             messageId: update.messageId,
             heartCount: update.heartCount,
+            emojiCounts: update.emojiCounts,
             receivedAt: new Date().toISOString(),
           },
         });
@@ -114,26 +120,21 @@ export class TelegramWebhookController {
         enqueued,
         deduplicated,
         errors,
-        queue: this.reactionQueue.getStats(),
+        queue: await this.reactionQueue.getStats(),
       },
     };
   }
 
-  private resolveStageBucket(heartCount: number | null): number {
-    const count = Number.isFinite(heartCount) ? Math.max(0, Math.floor(Number(heartCount))) : 0;
-    if (count <= 0 || this.reactionStages.length === 0) {
-      return 0;
+  private resolveStageBucket(
+    emojiCounts: Record<string, number> | null | undefined,
+    heartCount: number | null,
+  ): string {
+    const stage = resolveStageForReactionCounts(this.reactionStages, emojiCounts);
+    if (stage) {
+      return `${stage.index}:${stage.stage.code}`;
     }
 
-    let bucket = 0;
-    for (const stageThreshold of this.reactionStages) {
-      if (count >= stageThreshold) {
-        bucket = stageThreshold;
-      } else {
-        break;
-      }
-    }
-
-    return bucket;
+    const legacyHeartCount = Number.isFinite(heartCount) ? Math.max(0, Math.floor(Number(heartCount))) : 0;
+    return legacyHeartCount > 0 ? `legacy-heart:${legacyHeartCount}` : "none";
   }
 }

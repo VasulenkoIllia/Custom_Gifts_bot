@@ -24,6 +24,7 @@ type DbIdempotencyRow = {
 export class DbIdempotencyStore implements IdempotencyStore {
   private readonly db: DatabaseClient;
   private readonly maxEntries: number;
+  private insertsSinceTrim = 0;
 
   constructor(db: DatabaseClient, maxEntries = 50_000) {
     this.db = db;
@@ -52,7 +53,11 @@ export class DbIdempotencyStore implements IdempotencyStore {
 
     if (inserted.rowCount > 0) {
       const row = inserted.rows[0];
-      await this.trimIfNeeded();
+      this.insertsSinceTrim += 1;
+      if (this.insertsSinceTrim >= 100) {
+        await this.trimIfNeeded();
+        this.insertsSinceTrim = 0;
+      }
       return {
         created: true,
         entry: {

@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "Node",
+    "allowJs": true,
     "rootDir": "src",
     "outDir": "dist",
     "strict": true,
@@ -14,6 +15,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.js"],
   "exclude": ["dist", "node_modules", "reference"]
 }

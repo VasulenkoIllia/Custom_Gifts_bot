@@ -145,6 +145,29 @@ export async function loadQrRules(filePath: string): Promise<QrRules> {
     .map((item) => normalizeProfile(item))
     .filter((item): item is QrProfile => Boolean(item));
 
+  if (profiles.length === 0) {
+    throw new Error("qr-rules: at least one valid profile is required.");
+  }
+
+  const ids = new Set<string>();
+  const skuOwners = new Map<string, string>();
+  for (const profile of profiles) {
+    if (ids.has(profile.id)) {
+      throw new Error(`qr-rules: duplicate profile id "${profile.id}".`);
+    }
+    ids.add(profile.id);
+
+    for (const sku of profile.skus) {
+      const existing = skuOwners.get(sku);
+      if (existing) {
+        throw new Error(
+          `qr-rules: SKU "${sku}" is assigned to multiple profiles ("${existing}" and "${profile.id}").`,
+        );
+      }
+      skuOwners.set(sku, profile.id);
+    }
+  }
+
   return {
     profiles,
   };

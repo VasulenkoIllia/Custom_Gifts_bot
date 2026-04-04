@@ -8,7 +8,7 @@ FROM deps AS build
 COPY tsconfig.json tsconfig.test.json ./
 COPY src ./src
 COPY config ./config
-COPY reference ./reference
+COPY assets ./assets
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime
@@ -26,10 +26,14 @@ RUN npm ci --omit=dev \
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/config ./config
-COPY --from=build /app/reference ./reference
+COPY --from=build /app/assets ./assets
+COPY migrations ./migrations
 
 RUN mkdir -p /app/storage/files/materials /app/storage/temp
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/health/readiness').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
 
 CMD ["node", "dist/index.js"]

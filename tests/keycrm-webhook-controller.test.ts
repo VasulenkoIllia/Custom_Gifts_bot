@@ -84,16 +84,18 @@ test("KeycrmWebhookController deduplicates duplicate webhook events", async () =
     headers: {},
     payload,
     requestId: "req-1",
+    url: new URL("https://cgbot.workflo.space/webhook/keycrm"),
   });
 
   const second = await controller.handle({
     headers: {},
     payload,
     requestId: "req-2",
+    url: new URL("https://cgbot.workflo.space/webhook/keycrm"),
   });
 
-  assert.equal(first.statusCode, 202);
-  assert.equal(second.statusCode, 202);
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
 
   const firstBody = first.body as Record<string, unknown>;
   const secondBody = second.body as Record<string, unknown>;
@@ -101,4 +103,51 @@ test("KeycrmWebhookController deduplicates duplicate webhook events", async () =
   assert.equal(firstBody.enqueued, 1);
   assert.equal(secondBody.enqueued, 0);
   assert.equal(secondBody.idempotentDuplicates, 1);
+});
+
+test("KeycrmWebhookController accepts secret from query parameter", async () => {
+  const controller = new KeycrmWebhookController({
+    logger: createNoopLogger(),
+    orderQueue: {
+      enqueue: async () => ({
+        jobId: "job:1",
+        deduplicated: false,
+        queue: {
+          name: "order_intake",
+          concurrency: 1,
+          maxQueueSize: 10,
+          pending: 0,
+          running: 0,
+          inflightKeys: 1,
+        },
+      }),
+      getStats: async () => ({
+        name: "order_intake",
+        concurrency: 1,
+        maxQueueSize: 10,
+        pending: 0,
+        running: 0,
+        inflightKeys: 1,
+      }),
+    } as never,
+    idempotencyStore: new InMemoryIdempotencyStore(),
+    webhookSecret: "crm-secret",
+  });
+
+  const result = await controller.handle({
+    headers: {},
+    payload: {
+      event: "order.change_order_status",
+      context: {
+        id: 1002,
+        status_id: 20,
+        status_changed_at: "2026-03-19T10:05:00Z",
+      },
+    },
+    requestId: "req-query-secret",
+    url: new URL("https://cgbot.workflo.space/webhook/keycrm?secret=crm-secret"),
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.ok, true);
 });

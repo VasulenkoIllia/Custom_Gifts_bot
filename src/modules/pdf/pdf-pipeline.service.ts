@@ -6,8 +6,13 @@ import type { LayoutMaterial, LayoutPlan } from "../layout/layout.types";
 import { embedQrIntoPosterPdf } from "../qr/qr-code";
 import type { QrCodeDecision, QrRules } from "../qr/qr-rules";
 import { resolveQrCodeDecision } from "../qr/qr-rules";
-import { embedSpotifyCodeIntoPosterPdf, resolveSpotifyUri } from "../qr/spotify-code";
-import type { GeneratePdfMaterialsInput, PdfPipelineResult } from "./pdf.types";
+import {
+  embedSpotifyCodeIntoPosterPdf,
+  resolveSpotifyUri,
+  type SpotifyRequestOptions,
+} from "../qr/spotify-code";
+import type { ShortenUrlResult, UrlShortenerService } from "../url-shortener/shortener-service";
+import type { GeneratePdfMaterialsInput, PdfGeneratedFile, PdfPipelineResult } from "./pdf.types";
 
 type LegacyLayoutMaterial = {
   type: "poster" | "engraving" | "sticker";
@@ -54,15 +59,28 @@ type LegacyGenerateMaterialFiles = (input: {
   replaceWhiteWithOffWhite?: boolean;
   offWhiteHex?: string;
   rasterizeDpi?: number;
+  sourceRequestOptions?: {
+    timeoutMs: number;
+    retries: number;
+    retryBaseMs: number;
+  };
 }) => Promise<PdfPipelineResult>;
+
+type LegacyEnforceOffWhiteInPdf = (input: {
+  filePath: string;
+  offWhiteHex?: string;
+  rasterizeDpi?: number;
+}) => Promise<unknown>;
 
 type LegacyMaterialGeneratorModule = {
   generateMaterialFiles: LegacyGenerateMaterialFiles;
+  enforceOffWhiteInPdf?: LegacyEnforceOffWhiteInPdf;
 };
 
 type CreatePdfPipelineServiceParams = {
   logger: Logger;
   qrRules: QrRules;
+  urlShortenerService?: Pick<UrlShortenerService, "shorten"> | null;
   outputRoot: string;
   fontPath: string;
   emojiFontPath: string;
@@ -73,7 +91,12 @@ type CreatePdfPipelineServiceParams = {
   stickerSizeMm: number;
   offWhiteHex: string;
   rasterizeDpi: number;
-  legacyModulePath: string;
+  spotifyRequestOptions: SpotifyRequestOptions;
+  sourceRequestOptions: {
+    timeoutMs: number;
+    retries: number;
+    retryBaseMs: number;
+  };
   qrPlacementByFormat: {
     A5: { rightMm: number; bottomMm: number; sizeMm: number };
     A4: { rightMm: number; bottomMm: number; sizeMm: number };
@@ -81,11 +104,36 @@ type CreatePdfPipelineServiceParams = {
 };
 
 type PosterQrDecisionEntry = {
+  sku: string | null;
   format: "A5" | "A4" | null;
   decision: QrCodeDecision;
 };
 
-export function toLegacyLayoutPlan(layoutPlan: LayoutPlan): LegacyLayoutPlan {
+type QrDecisionWarningSource = {
+  filename: string;
+  sku: string | null;
+  decision: Pick<QrCodeDecision, "strategy" | "reason">;
+};
+
+type LegacyLayoutPlanOptions = {
+  effectiveQrUrl?: string | null;
+  shortQrUrl?: string | null;
+};
+
+type QrUrlResolution = {
+  url: string | null;
+  shortUrl: string | null;
+  provider: ShortenUrlResult["provider"] | null;
+  warnings: string[];
+};
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const materialGeneratorRuntime = require("./material-generator.runtime.js") as LegacyMaterialGeneratorModule;
+
+export function toLegacyLayoutPlan(
+  layoutPlan: LayoutPlan,
+  options: LegacyLayoutPlanOptions = {},
+): LegacyLayoutPlan {
   return {
     order_number: layoutPlan.orderNumber,
     urgent: layoutPlan.urgent,
@@ -95,8 +143,8 @@ export function toLegacyLayoutPlan(layoutPlan: LayoutPlan): LegacyLayoutPlan {
     qr: {
       requested: layoutPlan.qr.requested,
       original_url: layoutPlan.qr.originalUrl,
-      short_url: null,
-      url: layoutPlan.qr.url,
+      short_url: options.shortQrUrl ?? null,
+      url: options.effectiveQrUrl ?? layoutPlan.qr.url,
       valid: layoutPlan.qr.valid,
       should_generate: layoutPlan.qr.shouldGenerate,
     },
@@ -115,9 +163,84 @@ export function toLegacyLayoutPlan(layoutPlan: LayoutPlan): LegacyLayoutPlan {
   };
 }
 
+export function buildQrDecisionWarnings(items: QrDecisionWarningSource[]): string[] {
+  const warnings = new Set<string>();
+
+  for (const item of items) {
+    if (item.decision.strategy !== "none") {
+      continue;
+    }
+
+    const filename = String(item.filename ?? "").trim() || "невідомий макет";
+    const sku = String(item.sku ?? "").trim();
+    const skuLabel = sku ? `SKU ${sku}` : "товару без SKU";
+
+    if (item.decision.reason === "sku_not_whitelisted") {
+      warnings.add(
+        `🚨 QR-код замовлено, але для ${filename} (${skuLabel}) не налаштовані правила QR. QR не згенеровано і не вбудовано в макет.`,
+      );
+      continue;
+    }
+
+    if (item.decision.reason === "missing_sku") {
+      warnings.add(
+        `🚨 QR-код замовлено, але для ${filename} відсутній SKU. QR не згенеровано і не вбудовано в макет.`,
+      );
+      continue;
+    }
+
+    if (item.decision.reason === "missing_format") {
+      warnings.add(
+        `🚨 QR-код замовлено, але для ${filename} не вдалося визначити формат. QR не згенеровано і не вбудовано в макет.`,
+      );
+    }
+  }
+
+  return Array.from(warnings);
+}
+
+export function resolveCaptionQrUrl(params: {
+  layoutPlan: LayoutPlan;
+  generatedFiles: PdfGeneratedFile[];
+}): string | null {
+  if (!params.layoutPlan.qr.requested || !params.layoutPlan.qr.valid || !params.layoutPlan.qr.url) {
+    return null;
+  }
+
+  let hasEmbeddedCode = false;
+
+  for (const file of params.generatedFiles) {
+    if (file.type !== "poster") {
+      continue;
+    }
+
+    const details =
+      file.details && typeof file.details === "object"
+        ? (file.details as Record<string, unknown>)
+        : null;
+    const qrMeta =
+      details && details.qr && typeof details.qr === "object"
+        ? (details.qr as Record<string, unknown>)
+        : null;
+
+    if (qrMeta?.embedded !== true) {
+      continue;
+    }
+
+    hasEmbeddedCode = true;
+    const embeddedUrl = String(qrMeta.url ?? "").trim();
+    if (embeddedUrl) {
+      return embeddedUrl;
+    }
+  }
+
+  return hasEmbeddedCode ? params.layoutPlan.qr.url : null;
+}
+
 export class PdfPipelineService {
   private readonly logger: Logger;
   private readonly qrRules: QrRules;
+  private readonly urlShortenerService: Pick<UrlShortenerService, "shorten"> | null;
   private readonly outputRoot: string;
   private readonly fontPath: string;
   private readonly emojiFontPath: string;
@@ -128,17 +251,21 @@ export class PdfPipelineService {
   private readonly stickerSizeMm: number;
   private readonly offWhiteHex: string;
   private readonly rasterizeDpi: number;
-  private readonly legacyModulePath: string;
+  private readonly spotifyRequestOptions: SpotifyRequestOptions;
+  private readonly sourceRequestOptions: {
+    timeoutMs: number;
+    retries: number;
+    retryBaseMs: number;
+  };
   private readonly qrPlacementByFormat: {
     A5: { rightMm: number; bottomMm: number; sizeMm: number };
     A4: { rightMm: number; bottomMm: number; sizeMm: number };
   };
 
-  private legacyGenerateMaterialFiles: LegacyGenerateMaterialFiles | null = null;
-
   constructor(params: CreatePdfPipelineServiceParams) {
     this.logger = params.logger;
     this.qrRules = params.qrRules;
+    this.urlShortenerService = params.urlShortenerService ?? null;
     this.outputRoot = path.resolve(params.outputRoot);
     this.fontPath = path.resolve(params.fontPath);
     this.emojiFontPath = params.emojiFontPath ? path.resolve(params.emojiFontPath) : "";
@@ -151,8 +278,12 @@ export class PdfPipelineService {
     this.stickerSizeMm = params.stickerSizeMm;
     this.offWhiteHex = params.offWhiteHex;
     this.rasterizeDpi = params.rasterizeDpi;
-    this.legacyModulePath = path.resolve(params.legacyModulePath);
+    this.spotifyRequestOptions = params.spotifyRequestOptions;
+    this.sourceRequestOptions = params.sourceRequestOptions;
     this.qrPlacementByFormat = params.qrPlacementByFormat;
+    if (typeof materialGeneratorRuntime.generateMaterialFiles !== "function") {
+      throw new Error("Material generator runtime is invalid.");
+    }
   }
 
   async generateForOrder(input: GeneratePdfMaterialsInput): Promise<PdfPipelineResult> {
@@ -163,11 +294,28 @@ export class PdfPipelineService {
       throw new Error("orderId is required for PDF pipeline.");
     }
 
+    const postersMissingSource = input.layoutPlan.materials.filter(
+      (item) => item.type === "poster" && !String(item.sourceUrl ?? "").trim(),
+    );
+    if (postersMissingSource.length > 0) {
+      const filenames = postersMissingSource.map((item) => item.filename).join(", ");
+      throw new Error(
+        `Design source missing for poster(s): ${filenames}. Preview cannot be used as print source.`,
+      );
+    }
+
     const posterQrDecisions = this.resolvePosterQrDecisions(input.layoutPlan);
-    const layoutPlan = toLegacyLayoutPlan(input.layoutPlan);
+    const qrUrlResolution = await this.resolveQrUrlForEmbedding(
+      input.layoutPlan,
+      posterQrDecisions,
+      orderId,
+    );
+    const layoutPlan = toLegacyLayoutPlan(input.layoutPlan, {
+      effectiveQrUrl: qrUrlResolution.url,
+      shortQrUrl: qrUrlResolution.shortUrl,
+    });
     // QR embedding is executed in this TS layer per poster SKU/profile decision.
     layoutPlan.qr.should_generate = false;
-    const generateMaterialFiles = this.getLegacyGenerateMaterialFiles();
 
     this.logger.info("pdf_pipeline_started", {
       orderId,
@@ -176,7 +324,7 @@ export class PdfPipelineService {
       qrPlan: this.buildQrPlanCounters(posterQrDecisions),
     });
 
-    const result = await generateMaterialFiles({
+    const result = await materialGeneratorRuntime.generateMaterialFiles({
       layoutPlan,
       outputRoot: this.outputRoot,
       orderId,
@@ -191,13 +339,31 @@ export class PdfPipelineService {
       replaceWhiteWithOffWhite: true,
       offWhiteHex: this.offWhiteHex,
       rasterizeDpi: this.rasterizeDpi,
+      sourceRequestOptions: this.sourceRequestOptions,
     });
 
+    if (qrUrlResolution.warnings.length > 0) {
+      result.warnings.push(...qrUrlResolution.warnings);
+    }
+
+    const qrDecisionWarnings = buildQrDecisionWarnings(
+      Array.from(posterQrDecisions.entries()).map(([filename, entry]) => ({
+        filename,
+        sku: entry.sku,
+        decision: entry.decision,
+      })),
+    );
+    if (qrDecisionWarnings.length > 0) {
+      result.warnings.push(...qrDecisionWarnings);
+    }
+
     await this.applyPosterQrEmbeds({
-      qrUrl: input.layoutPlan.qr.url,
+      qrUrl: qrUrlResolution.url,
       result,
       decisions: posterQrDecisions,
     });
+
+    const finalPreflight = await this.runFinalPdfPreflight(result.generated);
 
     this.logger.info("pdf_pipeline_finished", {
       orderId,
@@ -205,6 +371,9 @@ export class PdfPipelineService {
       failed: result.failed.length,
       warnings: result.warnings.length,
       outputDir: result.output_dir,
+      shortenerProvider: qrUrlResolution.provider,
+      finalPreflightFiles: finalPreflight.filesProcessed,
+      finalPreflightCorrectedPixels: finalPreflight.correctedPixels,
     });
 
     return result;
@@ -222,6 +391,7 @@ export class PdfPipelineService {
         qrUrl: layoutPlan.qr.url,
       });
       decisions.set(poster.filename, {
+        sku: poster.sku ?? null,
         format: poster.format,
         decision,
       });
@@ -355,7 +525,7 @@ export class PdfPipelineService {
           }
 
           if (!spotifyUriResolved) {
-            spotifyUriCache = await resolveSpotifyUri(params.qrUrl);
+            spotifyUriCache = await resolveSpotifyUri(params.qrUrl, this.spotifyRequestOptions);
             spotifyUriResolved = true;
           }
 
@@ -367,9 +537,11 @@ export class PdfPipelineService {
             posterPdfPath: generatedFile.path,
             spotifyUri: spotifyUriCache,
             placement: decision.spotifyPlacement,
-            backgroundHex: this.offWhiteHex,
-            codeHex: "000000",
+            codeHex: "FFFFFF",
+            requestOptions: this.spotifyRequestOptions,
           });
+
+          await this.enforceOffWhiteAfterOverlay(generatedFile.path);
 
           if (this.colorSpace === "CMYK") {
             await this.convertPdfToCmykInPlace(generatedFile.path);
@@ -424,6 +596,64 @@ export class PdfPipelineService {
     }
 
     return counters;
+  }
+
+  private async resolveQrUrlForEmbedding(
+    layoutPlan: LayoutPlan,
+    decisions: Map<string, PosterQrDecisionEntry>,
+    orderId: string,
+  ): Promise<QrUrlResolution> {
+    if (!layoutPlan.qr.url) {
+      return {
+        url: layoutPlan.qr.url,
+        shortUrl: null,
+        provider: null,
+        warnings: [],
+      };
+    }
+
+    const requiresRegularQr = Array.from(decisions.values()).some(
+      (entry) => entry.decision.strategy === "qr",
+    );
+    if (!requiresRegularQr) {
+      return {
+        url: layoutPlan.qr.url,
+        shortUrl: null,
+        provider: null,
+        warnings: [],
+      };
+    }
+
+    if (!this.urlShortenerService) {
+      return {
+        url: layoutPlan.qr.url,
+        shortUrl: null,
+        provider: null,
+        warnings: ["URL shortener не налаштований, використано оригінальне посилання."],
+      };
+    }
+
+    const shortened = await this.urlShortenerService.shorten(layoutPlan.qr.url);
+    if (shortened.provider === "original") {
+      this.logger.warn("pdf_pipeline_shortener_unavailable", {
+        orderId,
+        url: layoutPlan.qr.url,
+        warnings: shortened.warnings,
+      });
+    } else {
+      this.logger.info("pdf_pipeline_shortener_applied", {
+        orderId,
+        provider: shortened.provider,
+        shortened: shortened.shortened,
+      });
+    }
+
+    return {
+      url: shortened.url,
+      shortUrl: shortened.shortened ? shortened.url : null,
+      provider: shortened.provider,
+      warnings: shortened.warnings,
+    };
   }
 
   private async convertPdfToCmykInPlace(filePath: string): Promise<void> {
@@ -489,20 +719,85 @@ export class PdfPipelineService {
     });
   }
 
-  private getLegacyGenerateMaterialFiles(): LegacyGenerateMaterialFiles {
-    if (this.legacyGenerateMaterialFiles) {
-      return this.legacyGenerateMaterialFiles;
+  private async enforceOffWhiteAfterOverlay(filePath: string): Promise<void> {
+    const enforce = this.getEnforceOffWhiteInPdf();
+    if (!enforce) {
+      return;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const legacyModule = require(this.legacyModulePath) as LegacyMaterialGeneratorModule;
-    if (!legacyModule || typeof legacyModule.generateMaterialFiles !== "function") {
-      throw new Error(
-        `Legacy material generator is invalid: ${this.legacyModulePath}`,
-      );
+    await enforce({
+      filePath,
+      offWhiteHex: this.offWhiteHex,
+      rasterizeDpi: this.rasterizeDpi,
+    });
+  }
+
+  private async runFinalPdfPreflight(
+    generatedFiles: PdfPipelineResult["generated"],
+  ): Promise<{ filesProcessed: number; correctedPixels: number }> {
+    const enforce = this.getEnforceOffWhiteInPdf();
+    if (!enforce) {
+      return {
+        filesProcessed: 0,
+        correctedPixels: 0,
+      };
     }
 
-    this.legacyGenerateMaterialFiles = legacyModule.generateMaterialFiles;
-    return this.legacyGenerateMaterialFiles;
+    let correctedPixels = 0;
+
+    for (const generatedFile of generatedFiles) {
+      const stats = await enforce({
+        filePath: generatedFile.path,
+        offWhiteHex: this.offWhiteHex,
+        rasterizeDpi: this.rasterizeDpi,
+      });
+
+      if (this.colorSpace === "CMYK") {
+        await this.convertPdfToCmykInPlace(generatedFile.path);
+      }
+
+      const fileCorrectedPixels = this.extractCorrectedPixelCount(stats);
+      correctedPixels += fileCorrectedPixels;
+      generatedFile.details = {
+        ...generatedFile.details,
+        final_preflight: {
+          applied: true,
+          corrected_pixels: fileCorrectedPixels,
+          color_space: this.colorSpace,
+          off_white_hex: this.offWhiteHex,
+        },
+      };
+    }
+
+    return {
+      filesProcessed: generatedFiles.length,
+      correctedPixels,
+    };
+  }
+
+  private extractCorrectedPixelCount(stats: unknown): number {
+    if (!stats || typeof stats !== "object") {
+      return 0;
+    }
+
+    const source = stats as Record<string, unknown>;
+    const candidates = [
+      Number(source.replaced_pixels ?? 0),
+      Number(source.cleanup_replaced_pixels ?? 0),
+      Number(source.forced_opaque_pixels ?? 0),
+    ];
+
+    return candidates.reduce((sum, value) => {
+      if (!Number.isFinite(value) || value <= 0) {
+        return sum;
+      }
+      return sum + Math.max(0, Math.floor(value));
+    }, 0);
+  }
+
+  private getEnforceOffWhiteInPdf(): LegacyEnforceOffWhiteInPdf | null {
+    return typeof materialGeneratorRuntime.enforceOffWhiteInPdf === "function"
+      ? materialGeneratorRuntime.enforceOffWhiteInPdf
+      : null;
   }
 }

@@ -28,22 +28,27 @@ async function handleRequest(
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
   try {
+    if (req.method === "GET" && url.pathname === "/health/liveness") {
+      sendJson(res, 200, runtime.healthService.getLiveness());
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/health/readiness") {
+      const readiness = await runtime.healthService.getReadiness();
+      sendJson(res, readiness.ok ? 200 : 503, readiness);
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/health") {
-      sendJson(res, 200, {
-        ok: true,
-        service: "custom-gifts-bot",
-        phase: config.projectPhase,
-        ts_bootstrap: true,
-        runtime: "webhook_intake_ready",
-        queue: {
-          order: runtime.orderQueue.getStats(),
-          reaction: runtime.reactionQueue.getStats(),
-        },
-      });
+      const summary = await runtime.healthService.getHealthSummary();
+      sendJson(res, summary.ok ? 200 : 503, summary);
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/webhook/keycrm") {
+      if (!runtime.keycrmWebhookController) {
+        throw new HttpError(503, "Receiver role is disabled for KeyCRM webhook.");
+      }
       const rawBody = await readRequestBody(req, config.requestBodyLimitBytes);
       if (!rawBody.trim()) {
         throw new HttpError(400, "Request body is empty.");
@@ -54,6 +59,7 @@ async function handleRequest(
         headers: req.headers,
         payload,
         requestId,
+        url,
       });
 
       sendJson(res, result.statusCode, result.body);
@@ -61,6 +67,9 @@ async function handleRequest(
     }
 
     if (req.method === "POST" && url.pathname === "/webhook/telegram") {
+      if (!runtime.telegramWebhookController) {
+        throw new HttpError(503, "Receiver role is disabled for Telegram webhook.");
+      }
       const rawBody = await readRequestBody(req, config.requestBodyLimitBytes);
       if (!rawBody.trim()) {
         throw new HttpError(400, "Request body is empty.");
@@ -71,6 +80,7 @@ async function handleRequest(
         headers: req.headers,
         payload,
         requestId,
+        url,
       });
 
       sendJson(res, result.statusCode, result.body);

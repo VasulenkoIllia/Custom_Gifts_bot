@@ -1,11 +1,14 @@
 import type { DatabaseClient } from "../db/postgres-client";
 import type {
+  TelegramOrderMessageRef,
   TelegramMessageMapStore,
   TelegramOrderWorkflowState,
 } from "./telegram-message-map.types";
 
 type DbMessageRow = {
   order_id: string;
+  chat_id?: string;
+  message_id?: number;
 };
 
 type DbOrderStateRow = {
@@ -87,6 +90,32 @@ export class DbTelegramMessageMapStore implements TelegramMessageMapStore {
     );
 
     return result.rows[0]?.order_id ?? null;
+  }
+
+  async listMessagesByOrder(orderId: string): Promise<TelegramOrderMessageRef[]> {
+    const normalizedOrderId = String(orderId ?? "").trim();
+    if (!normalizedOrderId) {
+      return [];
+    }
+
+    const result = await this.db.query<DbMessageRow>(
+      `
+        SELECT
+          chat_id,
+          message_id
+        FROM telegram_message_map
+        WHERE order_id = $1
+        ORDER BY created_at ASC, message_id ASC
+      `,
+      [normalizedOrderId],
+    );
+
+    return result.rows
+      .map((row) => ({
+        chatId: String(row.chat_id ?? "").trim(),
+        messageId: Number.parseInt(String(row.message_id ?? ""), 10),
+      }))
+      .filter((row) => row.chatId && Number.isFinite(row.messageId));
   }
 
   async markMessageHeartCount(chatId: string, messageId: number, heartCount: number): Promise<void> {

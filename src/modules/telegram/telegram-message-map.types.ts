@@ -8,6 +8,11 @@ export type TelegramMessageMapEntry = {
   lastHeartCount: number;
 };
 
+export type TelegramOrderMessageRef = {
+  chatId: string;
+  messageId: number;
+};
+
 export type TelegramOrderWorkflowState = {
   orderId: string;
   highestStageIndex: number;
@@ -24,6 +29,7 @@ export type TelegramMessageMapStore = {
     messageIds: number[];
   }) => Promise<{ linked: number }>;
   getOrderIdByMessage: (chatId: string, messageId: number) => Promise<string | null>;
+  listMessagesByOrder: (orderId: string) => Promise<TelegramOrderMessageRef[]>;
   markMessageHeartCount: (chatId: string, messageId: number, heartCount: number) => Promise<void>;
   getOrderState: (orderId: string) => Promise<TelegramOrderWorkflowState | null>;
   upsertOrderState: (params: {

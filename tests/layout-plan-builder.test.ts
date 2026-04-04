@@ -132,4 +132,221 @@ test("LayoutPlanBuilder adds note when QR is requested with invalid link", async
   assert.equal(plan.qr.valid, false);
   assert.equal(plan.qr.shouldGenerate, false);
   assert.equal(plan.notes.length, 1);
+  assert.equal(
+    plan.notes[0],
+    "🚨 Посилання QR невалідне. QR не згенеровано і не вбудовано в макет.",
+  );
+});
+
+test("LayoutPlanBuilder includes manual A6 and keychain items in total numbering and flags", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 901,
+    products: [
+      {
+        id: 10,
+        sku: "PhotoPosterA5Wood",
+        name: "Photo poster",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+          { name: "A6", value: "Так" },
+          { name: "Брелок", value: "Так" }
+        ],
+        offer: {
+          sku: "PhotoPosterA5Wood",
+          properties: [{ name: "Розмір", value: "A5" }]
+        }
+      }
+    ]
+  });
+
+  assert.equal(plan.materials.length, 1);
+  assert.equal(plan.materials[0]?.filename, "CGU_AA5_901_1_3");
+  assert.deepEqual(plan.flags, ["A6 +", "B +"]);
+});
+
+test("LayoutPlanBuilder counts manual positions across multiple posters without creating extra PDFs", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 902,
+    products: [
+      {
+        id: 11,
+        sku: "SpotifyA5Wood",
+        name: "Poster one",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster-1.pdf" },
+          { name: "_itemKey", value: "1" },
+          { name: "A6", value: "Так" }
+        ]
+      },
+      {
+        id: 12,
+        sku: "SpotifyA4Wood",
+        name: "Poster two",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster-2.pdf" },
+          { name: "_itemKey", value: "2" }
+        ],
+        offer: {
+          sku: "SpotifyA4Wood",
+          properties: [{ name: "Розмір", value: "A4" }]
+        }
+      }
+    ]
+  });
+
+  assert.equal(plan.materials.length, 2);
+  assert.equal(plan.materials[0]?.filename, "CGU_AA5_902_1_3");
+  assert.equal(plan.materials[1]?.filename, "CGU_AA4_902_2_3");
+  assert.deepEqual(plan.flags, ["A6 +"]);
+});
+
+test("LayoutPlanBuilder warns and skips engraving/sticker files when text is missing", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 903,
+    products: [
+      {
+        id: 20,
+        sku: "PhotoPosterA5Wood",
+        name: "Photo poster",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+          { name: "Гравіювання", value: "Так" },
+          { name: "Стікер-записка", value: "Так" },
+        ],
+        offer: {
+          sku: "PhotoPosterA5Wood",
+          properties: [{ name: "Розмір", value: "A5" }],
+        },
+      },
+    ],
+  });
+
+  assert.equal(plan.materials.length, 1);
+  assert.equal(plan.materials[0]?.filename, "CGU_AA5_903_1_3");
+  assert.deepEqual(plan.notes, [
+    "🚨 Замовлено гравіювання, але текст відсутній. Файл CGU_A5W_G_903_2_3 не згенеровано.",
+    "🚨 Замовлено стікер, але текст відсутній. Файл CGU_S_903_3_3 не згенеровано.",
+  ]);
+});
+
+test("LayoutPlanBuilder does not use preview image as poster print source", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 904,
+    products: [
+      {
+        id: 21,
+        sku: "PhotoPosterA5Wood",
+        name: "Preview only poster",
+        properties: [
+          { name: "_customization_image", value: "https://example.com/preview.jpg" },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(plan.previewImages.length, 1);
+  assert.equal(plan.materials[0]?.sourceUrl, null);
+  assert.equal(
+    plan.notes[0],
+    '🚨 Для "PhotoPosterA5Wood" відсутній друкарський файл (_tib_design_link_1). Preview не використовується як source для друку.',
+  );
+});
+
+test("LayoutPlanBuilder warns when preview URL is invalid", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 905,
+    products: [
+      {
+        id: 22,
+        sku: "PhotoPosterA5Wood",
+        name: "Poster with broken preview",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+          { name: "_customization_image", value: "bad-preview-url" },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(plan.previewImages, []);
+  assert.equal(
+    plan.notes[0],
+    '⚠️ Для "PhotoPosterA5Wood" _customization_image невалідний, прев\'ю не додано.',
+  );
+});
+
+test("LayoutPlanBuilder warns about unlinked add-ons", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 906,
+    products: [
+      {
+        id: 23,
+        sku: "PhotoPosterA5Wood",
+        name: "Poster",
+        properties: [
+          { name: "_itemKey", value: "base-1" },
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+        ],
+      },
+      {
+        id: 24,
+        sku: "Гравіювання",
+        name: "Гравіювання",
+        properties: [{ name: "Title", value: "Default Title" }],
+      },
+    ],
+  });
+
+  assert.equal(plan.materials.length, 1);
+  assert.equal(
+    plan.notes[0],
+    '⚠️ Додаткова позиція "Гравіювання" не прив\'язана до основного макета. Перевірте комплект вручну.',
+  );
+});
+
+test("LayoutPlanBuilder treats Live Photo as manager flag without unlinked warning", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 907,
+    products: [
+      {
+        id: 25,
+        sku: "PhotoPosterA5Wood",
+        name: "Poster",
+        properties: [
+          { name: "_itemKey", value: "base-1" },
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+        ],
+      },
+      {
+        id: 26,
+        sku: "Live Photo",
+        name: "Live Photo",
+        properties: [{ name: "Live Photo", value: "Так" }],
+      },
+    ],
+  });
+
+  assert.deepEqual(plan.flags, ["LF +"]);
+  assert.deepEqual(plan.notes, []);
 });

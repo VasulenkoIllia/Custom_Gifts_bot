@@ -15,7 +15,9 @@
 - Receiver валідовує запит.
 - Receiver створює idempotency key.
 - Receiver ставить job у queue.
-- Receiver швидко відповідає `200` або `202`.
+- Receiver швидко відповідає:
+  - `200` для KeyCRM webhook;
+  - `202` для Telegram webhook.
 - Важка обробка виконується worker-процесом, а не в HTTP request.
 
 ## 2. Чому так
@@ -44,13 +46,22 @@
 - Telegram queue
   - доставка матеріалів і прев'ю.
 - Reaction queue
-  - обробка сердець.
+  - обробка workflow-реакцій (`❤️`, `👍`).
+  - у поточній реалізації примусово серіалізована (`concurrency = 1`) для уникнення race condition по статусам CRM.
+- Forwarding queue
+  - пересилання/копіювання матеріалів у гілку `ЗАМОВЛЕННЯ` після `1 ❤️`.
 - Dead-letter queue
   - задачі, які не пройшли після всіх retry.
 
 ## 4. Retry policy
 - CRM fetch/update
   - короткі retry з exponential backoff.
+- Spotify short-link / scannable SVG
+  - timeout + retry з backoff.
+- URL shortener (`lnk.ua` primary, `cutt.ly` fallback)
+  - timeout + retry + automatic provider fallback.
+- Poster source PDF download
+  - timeout + retry з backoff.
 - Telegram send
   - retry на rate limit і transient network errors.
 - PDF generation
@@ -66,6 +77,7 @@
 
 ## 6. Що вважати transient помилкою
 - timeout CRM
+- timeout Spotify/scannables
 - `429` або `5xx` від Telegram
 - тимчасова мережева помилка
 - короткочасний збій зовнішнього URL preview/source
@@ -77,7 +89,9 @@
 - `telegram delivery`
   - `order_id + layout_plan_hash`
 - `reaction update`
-  - `chat_id + message_id + heart_stage`
+  - `chat_id + message_id + stage_bucket`
+- `forwarding`
+  - `order_id + stage + target_chat_id + target_thread_id`
 
 ## 8. Логування
 Рівні:
@@ -182,6 +196,7 @@
 - Якщо впав Telegram:
   - retry
   - при вичерпанні retry -> DLQ + alert
+  - помилка preview не має зупиняти відправку PDF (фіксується warning у логах)
 - Якщо не згенерувався PDF:
   - alert
   - не відправляти неповний комплект
@@ -191,6 +206,39 @@
 - Якщо заповнився диск:
   - alert
   - cleanup temp/generated retention
+
+## 15.1 Часткові бізнес-попередження, які не зупиняють замовлення
+- QR запитано, але SKU поза whitelist або не вистачає `SKU/format`:
+  - poster генерується без QR;
+  - у Telegram caption додається `🚨`-попередження, що QR не згенеровано і не вбудовано.
+- QR URL невалідний:
+  - `QR +` зберігається;
+  - poster генерується без QR;
+  - у Telegram caption додається `🚨`-попередження;
+  - сире `Посилання QR` не показується.
+- engraving/sticker без тексту:
+  - blank PDF не створюється;
+  - відсутній файл резервує свій індекс у `total`;
+  - у Telegram caption додається `🚨`-попередження з ім'ям файлу.
+- Shortener недоступний:
+  - QR вбудовується з оригінальним посиланням;
+  - у примітках має бути warning про fallback.
+- Невалідний preview URL:
+  - preview не додається;
+  - PDF-файли все одно надсилаються;
+  - у примітках зберігається `⚠️`-warning.
+- Неприв'язаний add-on:
+  - комплект не валиться автоматично;
+  - у примітках зберігається `⚠️`-warning на ручну перевірку.
+- Preview не доставлено:
+  - PDF-файли все одно надсилаються;
+  - у примітках зберігається `⚠️ Preview warning: ...`.
+
+## 15.2 Hard-fail правила
+- Якщо відсутній реальний design/source file для postera:
+  - preview не використовується як друкарський source;
+  - order flow завершується `pdf_generation` failure;
+  - CRM статус переходить у `Без файлу`.
 
 ## 16. Документація і підтримка
 Проєкт має жити довго, тому для кожного production-інциденту треба:

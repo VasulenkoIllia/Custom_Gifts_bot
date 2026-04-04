@@ -14,21 +14,39 @@ export async function bootstrap(): Promise<void> {
   });
 
   const runtime = await createRuntime(config, logger);
-  const server = createServer(createAppHandler({ config, logger, runtime }));
+  const server = runtime.httpEnabled
+    ? createServer(createAppHandler({ config, logger, runtime }))
+    : null;
 
-  server.listen(config.port, config.host, () => {
-    logger.info("server_started", {
-      host: config.host,
-      port: config.port,
-      phase: config.projectPhase,
-      webhook_keycrm: "/webhook/keycrm",
-      webhook_telegram: "/webhook/telegram",
+  if (server) {
+    server.on("error", (error) => {
+      logger.error("server_failed", {
+        host: config.host,
+        port: config.port,
+        role: config.appRole,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      process.exit(1);
     });
-  });
+
+    server.listen(config.port, config.host, () => {
+      logger.info("server_started", {
+        host: config.host,
+        port: config.port,
+        phase: config.projectPhase,
+        role: config.appRole,
+        health: "/health",
+        liveness: "/health/liveness",
+        readiness: "/health/readiness",
+        webhook_keycrm: "/webhook/keycrm",
+        webhook_telegram: "/webhook/telegram",
+      });
+    });
+  }
 
   const shutdown = (signal: string): void => {
     logger.info("server_shutdown_requested", { signal });
-    server.close(() => {
+    const finishShutdown = (): void => {
       void runtime
         .shutdown()
         .then(() => {
@@ -42,7 +60,16 @@ export async function bootstrap(): Promise<void> {
           });
           process.exit(1);
         });
-    });
+    };
+
+    if (server) {
+      server.close(() => {
+        finishShutdown();
+      });
+      return;
+    }
+
+    finishShutdown();
   };
 
   process.on("SIGINT", () => shutdown("SIGINT"));

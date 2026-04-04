@@ -23,6 +23,14 @@ async function removeStaleChildren(params: {
     failed: 0,
   };
 
+  if (!isSafeCleanupRoot(params.rootDir)) {
+    params.logger.error("storage_cleanup_blocked_unsafe_root", {
+      storageType: params.storageType,
+      rootDir: params.rootDir,
+    });
+    return result;
+  }
+
   if (!fs.existsSync(params.rootDir)) {
     return result;
   }
@@ -67,6 +75,7 @@ export class StorageRetentionService {
   private readonly tempRetentionHours: number;
   private readonly cleanupIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
+  private runPromise: Promise<void> | null = null;
 
   constructor(params: CreateStorageRetentionServiceParams) {
     this.logger = params.logger;
@@ -78,6 +87,10 @@ export class StorageRetentionService {
   }
 
   async start(): Promise<void> {
+    if (this.timer) {
+      return;
+    }
+
     await this.runOnce();
     this.timer = setInterval(() => {
       void this.runOnce();
@@ -92,6 +105,17 @@ export class StorageRetentionService {
   }
 
   async runOnce(): Promise<void> {
+    if (this.runPromise) {
+      return this.runPromise;
+    }
+
+    this.runPromise = this.runCleanup().finally(() => {
+      this.runPromise = null;
+    });
+    return this.runPromise;
+  }
+
+  private async runCleanup(): Promise<void> {
     const outputResult = await removeStaleChildren({
       rootDir: this.outputDir,
       maxAgeMs: this.outputRetentionHours * 60 * 60 * 1000,
@@ -117,4 +141,15 @@ export class StorageRetentionService {
       tempRetentionHours: this.tempRetentionHours,
     });
   }
+}
+
+function isSafeCleanupRoot(rootDir: string): boolean {
+  const resolved = path.resolve(rootDir);
+  const parsed = path.parse(resolved);
+  if (resolved === parsed.root) {
+    return false;
+  }
+
+  const segments = resolved.split(path.sep).filter(Boolean);
+  return segments.length >= 2;
 }

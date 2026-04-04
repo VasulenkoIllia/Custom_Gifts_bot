@@ -9,7 +9,7 @@
 ## 2. Основні принципи
 - `TypeScript strict mode` з максимально явними типами домену.
 - Всі зовнішні інтеграції ізольовані адаптерами.
-- Бізнес-правила винесені в конфіг і не захардкоджені в оркестрації.
+- Бізнес-правила винесені з коду: змінні workflow/routing правила в PostgreSQL, статичні SKU/QR mapping у versioned config.
 - Webhook receiver не виконує важку роботу синхронно.
 - PDF-обробка відокремлена від HTTP-приймача.
 - Всі критичні дії логуються структуровано.
@@ -40,83 +40,62 @@ flowchart TD
 ## 4. Рекомендована структура проєкту
 
 ```text
+config/
+  business-rules/
+    product-code-rules.json
+    qr-rules.json
+    reaction-status-rules.json
+
 src/
   app/
-    server.ts
     bootstrap.ts
+    runtime.ts
+    server.ts
   config/
+    config.types.ts
     load-config.ts
     validate-config.ts
-    business-rules/
-      product-code-rules.json
-      qr-rules.json
-      reaction-rules.json
-      status-rules.json
-      alert-rules.json
-  domain/
-    orders/
-      order.types.ts
-      order-normalizer.ts
-    materials/
-      material.types.ts
-      layout-plan.types.ts
-    reactions/
-      reaction.types.ts
-    pdf/
-      pdf.types.ts
   modules/
+    alerts/
+      ops-alert.service.ts
     crm/
       crm-client.ts
-      crm-order-service.ts
-      crm-status-service.ts
+    db/
+      postgres-client.ts
+      postgres-schema.ts
+    layout/
+      layout-plan-builder.ts
+      filename-builder.ts
+      sku-classifier.ts
+    orders/
+      order-idempotency.ts
+    pdf/
+      pdf-pipeline.service.ts
+    qr/
+      qr-code.ts
+      qr-rules.ts
+      spotify-code.ts
+    queue/
+      queue-service.ts
+      queue-jobs.ts
+      db-dead-letter-store.ts
+    reactions/
+      reaction-status-rules.ts
+      db-reaction-status-rules-store.ts
+    storage/
+      storage-retention.service.ts
+    telegram/
+      telegram-delivery.service.ts
+      db-telegram-message-map-store.ts
+      db-telegram-routing-config-store.ts
+      telegram-routing-config.ts
     webhook/
       keycrm-webhook.controller.ts
       telegram-webhook.controller.ts
       webhook-auth.ts
-    queue/
-      queue.types.ts
-      queue-service.ts
-      queue-jobs.ts
-      dead-letter.ts
-    orders/
-      order-orchestrator.ts
-      order-idempotency.ts
-    layout/
-      sku-classifier.ts
-      format-resolver.ts
-      stand-type-resolver.ts
-      filename-builder.ts
-      layout-plan-builder.ts
-    pdf/
-      poster-fetcher.ts
-      white-recolor.ts
-      cmyk-converter.ts
-      qr-embedder.ts
-      spotify-code.ts
-      engraving-generator.ts
-      sticker-generator.ts
-      pdf-pipeline.ts
-    telegram/
-      telegram-client.ts
-      telegram-delivery.ts
-      telegram-alerting.ts
-      telegram-message-store.ts
-    reactions/
-      reaction-counter.ts
-      reaction-workflow.ts
-    observability/
-      logger.ts
-      metrics.ts
-      alerting.ts
   workers/
-    order-worker.ts
-    reaction-worker.ts
-    pdf-worker.ts
-  storage/
-    files/
-    temp/
-  scripts/
-  tests/
+    order-intake-worker.ts
+    reaction-intake-worker.ts
 ```
 
 ## 5. Ролі модулів
@@ -128,12 +107,16 @@ src/
   - керує всім життєвим циклом одного замовлення.
 - `layout`
   - визначає, які матеріали потрібні, як вони називаються і в якому порядку йдуть.
+  - включно з manual-only позиціями (`A6`, `брелок`) у `total` нумерації.
 - `pdf`
   - вся важка логіка PDF, CMYK, QR, Spotify code, engraving, sticker.
 - `telegram`
-  - відправка файлів, прев'ю, alert-повідомлень, mapping message id -> order id.
+  - відправка файлів, прев'ю, alert-повідомлень, routing у `ЗАМОВЛЕННЯ`, mapping message id -> order id.
 - `reactions`
-  - обробка сердець у Telegram і оновлення статусів у CRM.
+  - обробка workflow-emoji у Telegram (`❤️`, `👍`) і оновлення статусів у CRM.
+  - stage resolver працює за `emoji + countThreshold (+emojiAliases)` з монотонними переходами.
+- `url-shortener`
+  - скорочення URL перед QR (`lnk.ua` primary, `cutt.ly` fallback).
 - `queue`
   - постановка задач, retry, DLQ, обмеження concurrency.
 - `observability`
@@ -151,11 +134,15 @@ src/
   - доставка прев'ю і файлів.
 - `reaction.process`
   - обробка реакцій Telegram.
+- `forwarding.send`
+  - пересилання комплекту в `ЗАМОВЛЕННЯ` після `PRINT`.
 - `alerts.send`
   - аварійні повідомлення в ops-чат.
 
 ## 7. Рекомендована модель надійності
-- Receiver відповідає `200/202` після успішного enqueue, а не після повної обробки.
+- Receiver відповідає після успішного enqueue, а не після повної обробки:
+  - KeyCRM webhook: `200`
+  - Telegram webhook: `202`
 - Кожен job має `idempotency key`.
 - Повторний webhook по тому самому замовленню не має дублювати результати.
 - Всі critical jobs мають retry з backoff.
@@ -175,14 +162,27 @@ src/
 - `Variant`, `name`, `sku`.
 
 ## 9. Мінімальний конфіг, який має змінюватися без коду
+- у PostgreSQL:
 - `status_id` для всіх переходів.
 - список emoji і кількість реакцій для кожного статусного переходу.
+- whitelist `allowedEmojis` для webhook parser.
+- enabled/disabled прапори stage (`PRINT` active, `PACKING(👍)` deferred).
+- stage trigger policy:
+  - `PRINT` -> `emoji=❤️`, `count>=1`
+  - `PACKING` -> `emoji=👍`, `count>=1` (pilot/disabled за замовчуванням)
+- topology `processing/orders/ops` з chat/thread id.
+- forwarding mode (`copy` / `forward`).
+
+- у versioned JSON:
 - whitelist SKU для QR і Spotify code.
 - special mapping SKU -> poster code.
 - mapping значень підставки -> `W`, `WW`, `MWW`, `C`, `K`.
 - параметри placement для QR/Spotify.
-- Telegram chat ids для production і ops alerts.
-- policy для retry і alert severity.
+- shortener provider order (`lnk.ua` -> `cutt.ly`).
+
+Bootstrap rule:
+- `reaction-status-rules.json` і `TELEGRAM_*` env використовуються для першого seed у БД;
+- після цього runtime читає reaction/routing config із PostgreSQL.
 
 ## 10. Логування
 Логи мають бути структуровані.

@@ -4,6 +4,7 @@ export type WebhookHandleInput = {
   headers: IncomingHttpHeaders;
   payload: unknown;
   requestId: string;
+  url?: URL;
 };
 
 export type WebhookHandleResult = {

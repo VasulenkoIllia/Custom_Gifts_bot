@@ -51,8 +51,25 @@ test("TelegramWebhookController deduplicates burst updates by stage bucket", asy
     logger: createLogger(),
     reactionQueue: queue as never,
     webhookSecret: "secret",
-    trackedHeartEmojis: ["❤️", "❤", "♥️", "♥"],
-    reactionStages: [1, 2],
+    trackedEmojis: ["❤️", "❤", "♥️", "♥", "👍"],
+    reactionStages: [
+      {
+        code: "PRINT",
+        emoji: "❤️",
+        emojiAliases: ["❤", "♥️", "♥"],
+        countThreshold: 1,
+        statusId: 22,
+        enabled: true,
+      },
+      {
+        code: "PACKING",
+        emoji: "👍",
+        emojiAliases: [],
+        countThreshold: 1,
+        statusId: 7,
+        enabled: false,
+      },
+    ],
   });
 
   const result = await controller.handle({
@@ -80,7 +97,7 @@ test("TelegramWebhookController deduplicates burst updates by stage bucket", asy
         message_reaction_count: {
           chat: { id: "-100" },
           message_id: 42,
-          reactions: [{ type: { type: "emoji", emoji: "❤️" }, total_count: 2 }],
+          reactions: [{ type: { type: "emoji", emoji: "👍" }, total_count: 1 }],
         },
       },
     ],

@@ -1,23 +1,44 @@
 import type { Logger } from "../../observability/logger";
 import type { IdempotencyStore } from "../orders/order-idempotency";
 import type { OrderIntakeJobPayload } from "../queue/queue-jobs";
-import { QueueOverflowError, QueueService } from "../queue/queue-service";
+import { QueueOverflowError } from "../queue/db-queue.service";
+import type { QueueProducer } from "../queue/queue.types";
 import { normalizeKeycrmWebhook } from "./keycrm-webhook-payload";
 import { validateWebhookSecret } from "./webhook-auth";
 import type { WebhookHandleInput, WebhookHandleResult } from "./webhook.types";
 
 type CreateKeycrmWebhookControllerParams = {
   logger: Logger;
-  orderQueue: QueueService<OrderIntakeJobPayload>;
+  orderQueue: QueueProducer<OrderIntakeJobPayload>;
   idempotencyStore: IdempotencyStore;
   webhookSecret: string;
 };
 
 const KEYCRM_SECRET_HEADERS = ["x-keycrm-webhook-secret", "x-webhook-secret"];
+const KEYCRM_SECRET_QUERY_PARAMS = ["secret", "webhook_secret", "token"];
+
+function validateKeycrmSecret(input: WebhookHandleInput, expectedSecret: string): boolean {
+  if (validateWebhookSecret(input.headers, expectedSecret, KEYCRM_SECRET_HEADERS)) {
+    return true;
+  }
+
+  if (!expectedSecret || !input.url) {
+    return !expectedSecret;
+  }
+
+  for (const queryParamName of KEYCRM_SECRET_QUERY_PARAMS) {
+    const value = input.url.searchParams.get(queryParamName);
+    if (typeof value === "string" && value.trim() === expectedSecret) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 export class KeycrmWebhookController {
   private readonly logger: Logger;
-  private readonly orderQueue: QueueService<OrderIntakeJobPayload>;
+  private readonly orderQueue: QueueProducer<OrderIntakeJobPayload>;
   private readonly idempotencyStore: IdempotencyStore;
   private readonly webhookSecret: string;
 
@@ -29,11 +50,7 @@ export class KeycrmWebhookController {
   }
 
   async handle(input: WebhookHandleInput): Promise<WebhookHandleResult> {
-    const isSecretValid = validateWebhookSecret(
-      input.headers,
-      this.webhookSecret,
-      KEYCRM_SECRET_HEADERS,
-    );
+    const isSecretValid = validateKeycrmSecret(input, this.webhookSecret);
 
     if (!isSecretValid) {
       return {
@@ -60,7 +77,7 @@ export class KeycrmWebhookController {
       }
 
       try {
-        const enqueueResult = this.orderQueue.enqueue({
+        const enqueueResult = await this.orderQueue.enqueue({
           key: `order:${candidate.orderId}`,
           payload: {
             orderId: candidate.orderId,
@@ -107,7 +124,7 @@ export class KeycrmWebhookController {
 
     const hasErrors = errors.length > 0;
     return {
-      statusCode: hasErrors ? 207 : 202,
+      statusCode: hasErrors ? 503 : 200,
       body: {
         ok: !hasErrors,
         requestId: input.requestId,
@@ -118,7 +135,7 @@ export class KeycrmWebhookController {
         queueDeduplicated,
         enqueued,
         errors,
-        queue: this.orderQueue.getStats(),
+        queue: await this.orderQueue.getStats(),
       },
     };
   }

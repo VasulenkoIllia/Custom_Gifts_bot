@@ -1,6 +1,13 @@
 import type { AppConfig } from "./config.types";
+import path from "node:path";
 
 export function validateConfig(config: AppConfig): void {
+  if (
+    !["all", "receiver", "workers", "order_worker", "reaction_worker"].includes(config.appRole)
+  ) {
+    throw new Error("APP_ROLE is invalid.");
+  }
+
   if (!config.host) {
     throw new Error("HOST is invalid.");
   }
@@ -17,6 +24,14 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("DATABASE_POOL_MAX is invalid.");
   }
 
+  if (typeof config.databaseAutoMigrateOnBoot !== "boolean") {
+    throw new Error("DATABASE_AUTO_MIGRATE_ON_BOOT is invalid.");
+  }
+
+  if (!config.databaseMigrationsDir) {
+    throw new Error("DATABASE_MIGRATIONS_DIR is invalid.");
+  }
+
   if (!config.keycrmApiBase) {
     throw new Error("KEYCRM_API_BASE is required.");
   }
@@ -29,8 +44,8 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("TELEGRAM_BOT_TOKEN is required.");
   }
 
-  if (!config.telegramChatId) {
-    throw new Error("TELEGRAM_CHAT_ID is required.");
+  if (!["copy", "forward"].includes(config.telegramForwardMode)) {
+    throw new Error("TELEGRAM_FORWARD_MODE is invalid.");
   }
 
   if (!Array.isArray(config.keycrmOrderInclude) || config.keycrmOrderInclude.length === 0) {
@@ -51,6 +66,48 @@ export function validateConfig(config: AppConfig): void {
 
   if (!Number.isFinite(config.keycrmRequestRetryBaseMs) || config.keycrmRequestRetryBaseMs <= 0) {
     throw new Error("KEYCRM_REQUEST_RETRY_BASE_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.spotifyRequestTimeoutMs) || config.spotifyRequestTimeoutMs <= 0) {
+    throw new Error("SPOTIFY_REQUEST_TIMEOUT_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.spotifyRequestRetries) || config.spotifyRequestRetries < 0) {
+    throw new Error("SPOTIFY_REQUEST_RETRIES is invalid.");
+  }
+
+  if (!Number.isFinite(config.spotifyRequestRetryBaseMs) || config.spotifyRequestRetryBaseMs <= 0) {
+    throw new Error("SPOTIFY_REQUEST_RETRY_BASE_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.shortenerRequestTimeoutMs) || config.shortenerRequestTimeoutMs <= 0) {
+    throw new Error("SHORTENER_REQUEST_TIMEOUT_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.shortenerRequestRetries) || config.shortenerRequestRetries < 0) {
+    throw new Error("SHORTENER_REQUEST_RETRIES is invalid.");
+  }
+
+  if (
+    !Number.isFinite(config.shortenerRequestRetryBaseMs) ||
+    config.shortenerRequestRetryBaseMs <= 0
+  ) {
+    throw new Error("SHORTENER_REQUEST_RETRY_BASE_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.pdfSourceRequestTimeoutMs) || config.pdfSourceRequestTimeoutMs <= 0) {
+    throw new Error("PDF_SOURCE_REQUEST_TIMEOUT_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.pdfSourceRequestRetries) || config.pdfSourceRequestRetries < 0) {
+    throw new Error("PDF_SOURCE_REQUEST_RETRIES is invalid.");
+  }
+
+  if (
+    !Number.isFinite(config.pdfSourceRequestRetryBaseMs) ||
+    config.pdfSourceRequestRetryBaseMs <= 0
+  ) {
+    throw new Error("PDF_SOURCE_REQUEST_RETRY_BASE_MS is invalid.");
   }
 
   if (!Number.isFinite(config.telegramRequestTimeoutMs) || config.telegramRequestTimeoutMs <= 0) {
@@ -120,6 +177,10 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("QUEUE_JOB_TIMEOUT_MS is invalid.");
   }
 
+  if (!Number.isFinite(config.queuePollIntervalMs) || config.queuePollIntervalMs <= 0) {
+    throw new Error("QUEUE_POLL_INTERVAL_MS is invalid.");
+  }
+
   if (!Number.isFinite(config.idempotencyMaxEntries) || config.idempotencyMaxEntries <= 0) {
     throw new Error("IDEMPOTENCY_MAX_ENTRIES is invalid.");
   }
@@ -139,10 +200,6 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("TELEGRAM_MESSAGE_MAP_MAX_ENTRIES is invalid.");
   }
 
-  if (!config.telegramLegacyClientPath) {
-    throw new Error("TELEGRAM_LEGACY_CLIENT_PATH is invalid.");
-  }
-
   if (!config.qrRulesPath) {
     throw new Error("QR_RULES_PATH is invalid.");
   }
@@ -150,10 +207,12 @@ export function validateConfig(config: AppConfig): void {
   if (!config.outputDir) {
     throw new Error("OUTPUT_DIR is invalid.");
   }
+  ensureSafeStoragePath("OUTPUT_DIR", config.outputDir);
 
   if (!config.tempDir) {
     throw new Error("TEMP_DIR is invalid.");
   }
+  ensureSafeStoragePath("TEMP_DIR", config.tempDir);
 
   if (!Number.isFinite(config.outputRetentionHours) || config.outputRetentionHours <= 0) {
     throw new Error("OUTPUT_RETENTION_HOURS is invalid.");
@@ -167,12 +226,34 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("CLEANUP_INTERVAL_MS is invalid.");
   }
 
-  if (!config.fontPath) {
-    throw new Error("FONT_PATH is invalid.");
+  if (!Number.isFinite(config.dbCleanupIntervalMs) || config.dbCleanupIntervalMs <= 0) {
+    throw new Error("DB_CLEANUP_INTERVAL_MS is invalid.");
   }
 
-  if (!config.pdfLegacyModulePath) {
-    throw new Error("PDF_LEGACY_MODULE_PATH is invalid.");
+  if (!Number.isFinite(config.queueJobRetentionHours) || config.queueJobRetentionHours <= 0) {
+    throw new Error("QUEUE_JOB_RETENTION_HOURS is invalid.");
+  }
+
+  if (
+    !Number.isFinite(config.telegramDeliveryRetentionHours) ||
+    config.telegramDeliveryRetentionHours <= 0
+  ) {
+    throw new Error("TELEGRAM_DELIVERY_RETENTION_HOURS is invalid.");
+  }
+
+  if (
+    !Number.isFinite(config.forwardingBatchRetentionHours) ||
+    config.forwardingBatchRetentionHours <= 0
+  ) {
+    throw new Error("FORWARDING_BATCH_RETENTION_HOURS is invalid.");
+  }
+
+  if (!Number.isFinite(config.deadLetterRetentionHours) || config.deadLetterRetentionHours <= 0) {
+    throw new Error("DEAD_LETTER_RETENTION_HOURS is invalid.");
+  }
+
+  if (!config.fontPath) {
+    throw new Error("FONT_PATH is invalid.");
   }
 
   if (!["RGB", "CMYK"].includes(config.pdfColorSpace)) {
@@ -213,5 +294,29 @@ export function validateConfig(config: AppConfig): void {
 
   if (!Number.isFinite(config.qrA4SizeMm) || config.qrA4SizeMm <= 0) {
     throw new Error("QR_A4_SIZE_MM is invalid.");
+  }
+
+  if (!Number.isFinite(config.readinessProbeTimeoutMs) || config.readinessProbeTimeoutMs <= 0) {
+    throw new Error("READINESS_PROBE_TIMEOUT_MS is invalid.");
+  }
+
+  if (
+    !Number.isFinite(config.readinessMinDiskFreeBytes) ||
+    config.readinessMinDiskFreeBytes < 0
+  ) {
+    throw new Error("READINESS_MIN_DISK_FREE_BYTES is invalid.");
+  }
+}
+
+function ensureSafeStoragePath(name: string, value: string): void {
+  const resolved = path.resolve(value);
+  const parsed = path.parse(resolved);
+  if (resolved === parsed.root) {
+    throw new Error(`${name} cannot be filesystem root.`);
+  }
+
+  const segments = resolved.split(path.sep).filter(Boolean);
+  if (segments.length < 2) {
+    throw new Error(`${name} must point to a nested directory (unsafe root-level path).`);
   }
 }

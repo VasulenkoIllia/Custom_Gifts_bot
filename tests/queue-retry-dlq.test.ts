@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { QueueService } from "../src/modules/queue/queue-service";
+import { QueueClosedError, QueueService } from "../src/modules/queue/queue-service";
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -113,4 +113,32 @@ test("QueueService moves job to dead letter after retry limit", async () => {
   await deadLetter;
   assert.equal(attempts, 2);
   await wait(5);
+});
+
+test("QueueService close waits for running job and rejects new enqueue", async () => {
+  const queue = new QueueService<{ value: string }>({
+    name: "q_close",
+    concurrency: 1,
+    maxQueueSize: 10,
+    jobTimeoutMs: 5_000,
+    handler: async () => {
+      await wait(30);
+    },
+  });
+
+  queue.enqueue({
+    key: "k-close-1",
+    payload: { value: "x" },
+  });
+
+  await queue.close(5_000);
+
+  assert.throws(
+    () =>
+      queue.enqueue({
+        key: "k-close-2",
+        payload: { value: "y" },
+      }),
+    (error: unknown) => error instanceof QueueClosedError,
+  );
 });

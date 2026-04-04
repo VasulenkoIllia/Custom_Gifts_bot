@@ -11,5 +11,6 @@ export type ReactionIntakeJobPayload = {
   chatId: string | null;
   messageId: number | null;
   heartCount: number | null;
+  emojiCounts: Record<string, number> | null;
   receivedAt: string;
 };

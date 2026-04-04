@@ -2,16 +2,22 @@
   "materialsStatusId": 20,
   "missingFileStatusId": 40,
   "missingTelegramStatusId": 59,
+  "allowedEmojis": ["❤️", "❤", "♥️", "♥", "👍"],
   "stages": [
     {
-      "heartCount": 1,
+      "emoji": "❤️",
+      "emojiAliases": ["❤", "♥️", "♥"],
+      "countThreshold": 1,
       "statusId": 22,
-      "code": "PRINT"
+      "code": "PRINT",
+      "enabled": true
     },
     {
-      "heartCount": 2,
+      "emoji": "👍",
+      "countThreshold": 1,
       "statusId": 7,
-      "code": "PACKING"
+      "code": "PACKING",
+      "enabled": false
     }
   ],
   "rollback": "ignore"

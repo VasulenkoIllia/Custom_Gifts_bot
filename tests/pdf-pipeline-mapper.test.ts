@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { toLegacyLayoutPlan } from "../src/modules/pdf/pdf-pipeline.service";
+import {
+  buildQrDecisionWarnings,
+  resolveCaptionQrUrl,
+  toLegacyLayoutPlan,
+} from "../src/modules/pdf/pdf-pipeline.service";
 
 test("toLegacyLayoutPlan maps layout plan fields for legacy generator", () => {
   const legacy = toLegacyLayoutPlan({
@@ -53,4 +57,107 @@ test("toLegacyLayoutPlan maps layout plan fields for legacy generator", () => {
   assert.equal(legacy.materials[1]?.stand_type, "W");
   assert.equal(legacy.qr.should_generate, true);
   assert.equal(legacy.qr.short_url, null);
+});
+
+test("toLegacyLayoutPlan supports resolved short QR URL metadata", () => {
+  const legacy = toLegacyLayoutPlan(
+    {
+      orderNumber: "111",
+      urgent: false,
+      flags: ["QR +"],
+      notes: [],
+      previewImages: [],
+      qr: {
+        requested: true,
+        valid: true,
+        shouldGenerate: true,
+        originalUrl: "https://example.com/long",
+        url: "https://example.com/long",
+      },
+      materials: [],
+    },
+    {
+      effectiveQrUrl: "https://lnk.ua/abc123",
+      shortQrUrl: "https://lnk.ua/abc123",
+    },
+  );
+
+  assert.equal(legacy.qr.original_url, "https://example.com/long");
+  assert.equal(legacy.qr.url, "https://lnk.ua/abc123");
+  assert.equal(legacy.qr.short_url, "https://lnk.ua/abc123");
+});
+
+test("buildQrDecisionWarnings emits alert warning for unsupported QR SKU", () => {
+  const warnings = buildQrDecisionWarnings([
+    {
+      filename: "CGU_AA5_29071_1_2_T",
+      sku: "MDPA5WoodRGB",
+      decision: {
+        strategy: "none",
+        reason: "sku_not_whitelisted",
+      },
+    },
+    {
+      filename: "CGU_AA5_29069_1_2",
+      sku: "YouTubeA5WoodMultiWW",
+      decision: {
+        strategy: "qr",
+        reason: "regular_qr",
+      },
+    },
+  ]);
+
+  assert.deepEqual(warnings, [
+    "🚨 QR-код замовлено, але для CGU_AA5_29071_1_2_T (SKU MDPA5WoodRGB) не налаштовані правила QR. QR не згенеровано і не вбудовано в макет.",
+  ]);
+});
+
+test("resolveCaptionQrUrl returns embedded QR URL and hides non-embedded cases", () => {
+  const baseLayoutPlan = {
+    orderNumber: "100",
+    urgent: false,
+    flags: ["QR +"],
+    notes: [],
+    previewImages: [],
+    qr: {
+      requested: true,
+      valid: true,
+      shouldGenerate: true,
+      originalUrl: "https://example.com/original",
+      url: "https://example.com/original",
+    },
+    materials: [],
+  };
+
+  const visibleUrl = resolveCaptionQrUrl({
+    layoutPlan: baseLayoutPlan,
+    generatedFiles: [
+      {
+        type: "poster",
+        filename: "CGU_AA5_100_1_1.pdf",
+        path: "/tmp/one.pdf",
+        details: {
+          qr: {
+            embedded: true,
+            url: "https://lnk.ua/short-1",
+          },
+        },
+      },
+    ],
+  });
+
+  const hiddenUrl = resolveCaptionQrUrl({
+    layoutPlan: baseLayoutPlan,
+    generatedFiles: [
+      {
+        type: "poster",
+        filename: "CGU_AA5_100_1_1.pdf",
+        path: "/tmp/one.pdf",
+        details: {},
+      },
+    ],
+  });
+
+  assert.equal(visibleUrl, "https://lnk.ua/short-1");
+  assert.equal(hiddenUrl, null);
 });

@@ -13,6 +13,7 @@
 
 Для щоденної роботи достатньо цього документа плюс:
 - [docs/TZ_COMPLETION_PLAN.md](./TZ_COMPLETION_PLAN.md)
+- [docs/TZ_ADDENDUM_PLAN.md](./TZ_ADDENDUM_PLAN.md)
 - [docs/CUSTOMER_BRIEF.md](./CUSTOMER_BRIEF.md)
 
 ## 1.1 Структура документації
@@ -22,6 +23,8 @@
   - головний документ керування роботою.
 - [docs/TZ_COMPLETION_PLAN.md](./TZ_COMPLETION_PLAN.md)
   - джерело підтверджених фактів, правил і відкритих питань.
+- [docs/TZ_ADDENDUM_PLAN.md](./TZ_ADDENDUM_PLAN.md)
+  - план нових вимог, які додані після стартового ТЗ.
 - [docs/CUSTOMER_BRIEF.md](./CUSTOMER_BRIEF.md)
   - короткий опис реалізації для замовника.
 
@@ -40,7 +43,11 @@
 - щоденна робота ведеться тільки через основну документацію;
 - reference docs відкриваються лише для деталізації конкретного питання.
 
-## 2. Що вже зафіксовано
+## 2. Що зафіксовано як цільові правила
+Примітка:
+- цей розділ фіксує узгоджені правила процесу;
+- факт реалізації перевіряється по статусах етапів у розділі `5`.
+
 - webhook у CRM буде надходити тільки для Shopify-замовлень;
 - статуси CRM підтверджені live:
   - `Матеріали = 20`
@@ -51,19 +58,56 @@
   - `2`: engraving
   - `3`: sticker
 - реакції за замовчуванням працюють тільки вперед:
-  - `1 ❤️` -> `Друк`
-  - `2 ❤️` -> `Пакування`
+  - `1 ❤️` -> `Друк` + пересилання в гілку `ЗАМОВЛЕННЯ`;
+  - `👍` -> `Пакування` (пілотний відкладений етап, disabled за замовчуванням);
   - rollback не робимо;
+- у примітках повідомлення підтримуються прапори:
+  - `QR +`, `LF +`, `A6 +`, `B +`;
+- якщо в замовленні є `A6`/`брелок`, вони входять у загальний `total` нумерації файлів;
+- перед QR-генерацією посилання проходить shortener:
+  - primary `lnk.ua`;
+  - fallback `cutt.ly`.
+- структура Telegram робочого простору:
+  - `ОБРОБКА` (автоматичний потік бота);
+  - `ЗАМОВЛЕННЯ` (відібрані/виправлені макети);
+  - `ЧАТ` (комунікація команди);
 - `RBG` у SKU підтверджено як реальні артикули;
 - поточний JS-код вважається reference, а не цільовою архітектурою.
 
 ## 2.1 Відкладені уточнення
 Ці питання відкладені на пізніше і не блокують поточну реалізацію:
-- multi-poster нумерація в одному order;
-- фіксований/динамічний розмір стікера;
-- фінальна специфіка Spotify code (візуальні деталі);
-- додаткові типи кодів поза QR/Spotify;
-- доля SKU `FriendAppleA5RGB+K`, якого зараз немає в CRM.
+- чи реакції для workflow мають оброблятися тільки на повідомленнях із PDF файлами, чи також на preview-повідомленнях;
+- для `1 ❤️` пересилаємо в `ЗАМОВЛЕННЯ` увесь комплект чи тільки poster;
+- `copy` чи `forward` як основна політика пересилання;
+- чи дублюємо пересилання після `1 ❤️` ще й у приватний чат менеджера;
+- коли вмикаємо пілотний етап `👍 -> Пакування` і чи лишається він у фінальному workflow;
+- чи для `👍` застосовуємо авто-ланцюжок `Друк -> Пакування`, якщо `❤️` не було;
+- доля SKU `FriendAppleA5RGB+K`, якого зараз немає в CRM (не блокує запуск, якщо SKU не приходить у webhook-потоці).
+
+## 2.2 Поточний локальний readiness
+Поточний стан для локального тестування:
+- live access до `KeyCRM`, `Telegram Bot API`, `lnk.ua`, `cutt.ly` і `Spotify scannables` підтверджений;
+- цього достатньо для формування `layout plan`, QR/Spotify decision і Telegram caption;
+- для повного локального runtime ще потрібен PostgreSQL (`DATABASE_URL`);
+- webhook secrets (`KEYCRM_WEBHOOK_SECRET`, `TELEGRAM_REACTION_SECRET_TOKEN`) можна відкласти до етапу підключення webhook;
+- локальний no-webhook етап вважається основним наступним кроком.
+
+Мінімальний контур для ручного інтеграційного тесту без webhook:
+- PostgreSQL;
+- `KEYCRM_TOKEN` + `KEYCRM_API_BASE`;
+- `TELEGRAM_BOT_TOKEN`;
+- Telegram destination для `ОБРОБКА`;
+- Telegram destination для `ЗАМОВЛЕННЯ`;
+- shortener доступ (`lnk.ua` / `cutt.ly`);
+- локальний запуск worker/runtime або ручного processing runner.
+
+Що ще потрібно для Telegram-перевірки:
+- один Telegram bot;
+- одна `supergroup`;
+- мінімум 2 topic-гілки:
+  - `ОБРОБКА`
+  - `ЗАМОВЛЕННЯ`
+- ops topic бажаний, але для початкового no-webhook тесту не є blocker.
 
 ## 3. Основна стратегія реалізації
 - Не доробляти current JS-код як фінальний production baseline.
@@ -82,6 +126,8 @@
   - один керуючий документ.
 - [docs/TZ_COMPLETION_PLAN.md](./TZ_COMPLETION_PLAN.md)
   - підтверджені факти, SKU, API, rules.
+- [docs/TZ_ADDENDUM_PLAN.md](./TZ_ADDENDUM_PLAN.md)
+  - додаткові вимоги по Telegram-гілках і reaction-flow.
 - [docs/CUSTOMER_BRIEF.md](./CUSTOMER_BRIEF.md)
   - короткий опис для замовника.
 
@@ -107,11 +153,42 @@
 
 ## 5. Етапи реалізації
 
+### Етап F0. Manual інтеграційне тестування без webhook
+Статус: `in_progress`
+
+Ціль:
+- перевірити реальний шлях `CRM order -> processing -> PDF/caption/Telegram` без зовнішнього webhook trigger;
+- спочатку підтвердити правильність формування матеріалів і повідомлень;
+- тільки після цього підключати webhook-и.
+
+Поточний принцип тестування:
+- беремо конкретне тестове замовлення;
+- опрацьовуємо його вручну локально;
+- перевіряємо `layout plan`, PDF-комплект, caption і доставку в Telegram;
+- після стабільного проходу кількох order cases переходимо до webhook stage.
+
+Що блокує повний локальний runtime прямо зараз:
+- відсутній `DATABASE_URL` у локальному контурі;
+- не заведені webhook secrets;
+- може бути не заведений routing для `ЗАМОВЛЕННЯ` / ops.
+
+Що не блокує цей етап:
+- відсутність webhook secret;
+- відсутність production HTTPS endpoint;
+- відсутність Telegram reaction webhook.
+
+Додаткові локальні helper scripts для цього етапу:
+- snapshot поточних CRM statuses перед тестом;
+- manual status set у `Матеріали = 20`;
+- manual trigger локального processing без KeyCRM webhook;
+- sync реальних Telegram reaction updates без Telegram webhook;
+- restore CRM statuses після тесту.
+
 ### Етап A. Freeze і база
 Статус: `done`
 
 Що вже зроблено:
-- зафіксовано legacy snapshot у `reference/legacy-js/`;
+- зафіксовано legacy snapshot у `reference/legacy-js/` як архівний baseline;
 - створено базовий комплект documentation;
 - зроблено live-аудит SKU через CRM API.
 
@@ -177,13 +254,15 @@
   - `POST /webhook/keycrm`;
   - `POST /webhook/telegram`;
 - додано валідацію webhook secret:
-  - KeyCRM: `x-keycrm-webhook-secret` / `x-webhook-secret` (якщо `KEYCRM_WEBHOOK_SECRET` заданий);
+  - KeyCRM: query param `?secret=<KEYCRM_WEBHOOK_SECRET>` або legacy header `x-keycrm-webhook-secret` / `x-webhook-secret`;
   - Telegram: `x-telegram-bot-api-secret-token` (якщо `TELEGRAM_REACTION_SECRET_TOKEN` заданий);
 - додано idempotency store в PostgreSQL (`idempotency_keys`);
 - додано queue intake layer:
   - `order_intake` queue;
   - `reaction_intake` queue;
-- receiver тепер відповідає після enqueue (`202`/`207`), без heavy processing в HTTP handler;
+- receiver відповідає після enqueue, без heavy processing в HTTP handler:
+  - KeyCRM: `200` при успішному enqueue;
+  - Telegram: `202` при успішному enqueue;
 - додано `/health` з runtime queue stats.
 
 Програмна перевірка:
@@ -255,7 +334,7 @@
 
 Що лишається по етапу E:
 - live-перевірка naming на реальних замовленнях з CRM;
-- закрити відкрите питання про політику нумерації, якщо в одному order буде кілька base poster.
+- валідувати multi-poster нумерацію на реальних кейсах (`_1_N`, `_2_N`, ...).
 
 ### Етап F. PDF pipeline
 Статус: `in_progress`
@@ -325,7 +404,7 @@
 - alert routing у технічний чат.
 
 Що вже зроблено:
-- додано `TelegramDeliveryService` (TS adapter до `reference/legacy-js/telegram-client.js`);
+- додано `TelegramDeliveryService` з внутрішнім runtime-клієнтом у `src/modules/telegram/telegram-client.runtime.js`;
 - `order_intake` worker тепер:
   - обробляє замовлення тільки коли `status_id == materialsStatusId`;
   - після генерації PDF відправляє прев'ю + файли в Telegram;
@@ -369,7 +448,7 @@
 - reaction parsing;
 - stage tracking;
 - `1 ❤️ -> Друк`;
-- `2 ❤️ -> Пакування`;
+- `👍 -> Пакування` тримати вимкненим (pilot-disabled) до окремого рішення;
 - no rollback.
 
 Що вже зроблено:
@@ -377,10 +456,12 @@
 - додано `ReactionStatusRules` loader + resolver;
 - `reaction_intake` worker тепер:
   - знаходить `orderId` по `chatId/messageId` через PostgreSQL message-map store;
-  - застосовує monotonic stage transitions:
-    - `1+ ❤️ -> Друк`;
-    - `2+ ❤️ -> Пакування`;
-  - ігнорує rollback (меншу кількість hearts після підвищення етапу);
+  - застосовує monotonic stage transitions за `emoji + threshold`:
+    - `PRINT`: `❤️` (з alias `❤/♥️/♥`) `>=1`;
+    - `PACKING`: `👍 >=1` (stage вимкнений у дефолтному конфігу);
+  - підтримує послідовне застосування етапів при стрибку:
+    - якщо `PACKING` увімкнено і прилетів тільки `👍`, виконується ланцюжок `Друк -> Пакування`;
+  - ігнорує rollback (меншу кількість релевантних реакцій після підвищення етапу);
   - викликає `PUT /order/{id}` для зміни `status_id`;
 - додано unit test для reaction worker monotonic transitions.
 - додано anti-flood policy для burst updates:
@@ -393,7 +474,7 @@
 - tests на unlike.
 
 Що вже перевірено автоматично:
-- tests на `resolveStageForHeartCount`;
+- tests на `resolveStageForReactionCounts`;
 - tests на monotonic `reaction_intake` transitions;
 - tests на stage-bucket dedupe в `TelegramWebhookController`;
 - `npm run check` / `build` / `test` пройдено.
@@ -402,7 +483,8 @@
 - live webhook smoke з реальними Telegram reaction update payloads.
 
 Ручна перевірка:
-- руками проставити реакції і перевірити оновлення статусів у CRM.
+- руками проставити `1 ❤️` і перевірити оновлення статусу на `Друк`;
+- перевірити, що `👍` не дає нового переходу, поки stage вимкнений.
 
 ### Етап I. Stress, hardening, production cutover
 Статус: `in_progress`
@@ -438,10 +520,12 @@
 - full production switch.
 
 ## 6. Що ще не закрито
-- Чи може бути більше одного базового постера в одному замовленні.
-- Чи стікер завжди фіксованого розміру.
-- Яка фінальна специфіка Spotify code.
-- Чи є ще типи кодів, крім QR і Spotify code.
+- Фінально зафіксувати політику `copy` чи `forward` для пересилання у `ЗАМОВЛЕННЯ`.
+- Визначити, чи реакції приймаємо тільки з PDF-повідомлень, чи також із preview.
+- Визначити, чи пересилання після `1 ❤️` дублюється в приватний чат менеджера.
+- Вирішити долю етапу `👍 -> Пакування` (залишаємо відключеним або вмикаємо в майбутньому релізі).
+- Зафіксувати порядок включення ручних `A6/B` у нумерацію, якщо в одному замовленні кілька poster.
+- Узгодити fallback-поведінку shortener (`lnk.ua -> cutt.ly`) при часткових збоях.
 - Що робити з `FriendAppleA5RGB+K`, якого зараз нема в CRM.
 
 ## 7. Основні production-ризики
@@ -465,7 +549,9 @@
 - live UAT по Stage F/G/H:
   - PDF smoke (3 сценарії);
   - Telegram send і message mapping;
-  - reaction workflow `1❤️/2❤️` в CRM.
+  - reaction workflow `1❤️` в CRM + перевірка, що `👍` неактивний у дефолтному режимі;
+  - перевірка пересилання у гілку `ЗАМОВЛЕННЯ` після `1 ❤️`.
+  - перевірка нумерації з ручними позиціями `A6/B` у `total`.
   - виконати checklist:
     - [docs/MANUAL_UAT_CHECKLIST.md](./MANUAL_UAT_CHECKLIST.md)
 

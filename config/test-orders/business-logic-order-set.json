@@ -1,0 +1,36 @@
+{
+  "orderIds": [
+    "29061",
+    "29062",
+    "29063",
+    "29064",
+    "29065",
+    "29066",
+    "29067",
+    "29068",
+    "29069",
+    "29070",
+    "29071",
+    "29072",
+    "29073",
+    "29074",
+    "29075"
+  ],
+  "scenarios": {
+    "29061": "Apple A5: QR + Live Photo + engraving + sticker + A6 + keychain + urgent",
+    "29062": "Spotify A4 speaker: Spotify code path + engraving + sticker",
+    "29063": "Simple map poster A5 without add-ons",
+    "29064": "Love poster A5 with power block only",
+    "29065": "Special nightlight BirdsLove with engraving",
+    "29066": "PhotoPoster A4 with engraving + sticker",
+    "29067": "Simple photo collage poster A4 without add-ons",
+    "29068": "Two-base-poster order with Live Photo, keychain, mixed engraving/sticker, urgent",
+    "29069": "YouTube poster A5 with QR + engraving",
+    "29070": "SoundCloud poster A5 with QR + keychain",
+    "29071": "Non-whitelisted QR SKU with engraving + urgent",
+    "29072": "Poster A5 with A6 + keychain + urgent",
+    "29073": "Transparent map poster A5 without add-ons",
+    "29074": "Zodiac nightlight special code",
+    "29075": "Family collage A5 with engraving + sticker + urgent"
+  }
+}

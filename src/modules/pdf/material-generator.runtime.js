@@ -16,6 +16,10 @@ const DEFAULT_FONT_SIZE = 28;
 const MIN_FONT_SIZE = 4;
 const MAX_PADDING_MM = 5;
 const MIN_PADDING_MM = 1.5;
+const DEFAULT_SOURCE_REQUEST_TIMEOUT_MS = 20_000;
+const DEFAULT_SOURCE_REQUEST_RETRIES = 2;
+const DEFAULT_SOURCE_REQUEST_RETRY_BASE_MS = 800;
+const DEFAULT_EMOJI_REQUEST_TIMEOUT_MS = 10_000;
 
 const ENGRAVING_ZONE_BY_FORMAT = {
   A5: { widthMm: 148, heightMm: 22 },
@@ -25,6 +29,107 @@ const ENGRAVING_ZONE_BY_FORMAT = {
 const mmToPt = (mm) => (mm * 72) / 25.4;
 
 let ghostscriptVersionPromise = null;
+
+function sleep(delayMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
+}
+
+function normalizeSourceRequestOptions(sourceRequestOptions = {}) {
+  const timeoutMs = Number.parseInt(
+    String(sourceRequestOptions.timeoutMs ?? DEFAULT_SOURCE_REQUEST_TIMEOUT_MS),
+    10,
+  );
+  const retries = Number.parseInt(
+    String(sourceRequestOptions.retries ?? DEFAULT_SOURCE_REQUEST_RETRIES),
+    10,
+  );
+  const retryBaseMs = Number.parseInt(
+    String(sourceRequestOptions.retryBaseMs ?? DEFAULT_SOURCE_REQUEST_RETRY_BASE_MS),
+    10,
+  );
+
+  return {
+    timeoutMs: Number.isFinite(timeoutMs)
+      ? Math.max(1_000, Math.min(120_000, timeoutMs))
+      : DEFAULT_SOURCE_REQUEST_TIMEOUT_MS,
+    retries: Number.isFinite(retries)
+      ? Math.max(0, Math.min(6, retries))
+      : DEFAULT_SOURCE_REQUEST_RETRIES,
+    retryBaseMs: Number.isFinite(retryBaseMs)
+      ? Math.max(100, Math.min(20_000, retryBaseMs))
+      : DEFAULT_SOURCE_REQUEST_RETRY_BASE_MS,
+  };
+}
+
+function computeBackoffDelayMs(attempt, baseDelayMs, maxDelayMs = 20_000) {
+  const safeAttempt = Math.max(1, Number.parseInt(String(attempt), 10) || 1);
+  const cappedExp = Math.min(8, safeAttempt - 1);
+  const exponential = baseDelayMs * (2 ** cappedExp);
+  const jitter = Math.floor(Math.random() * Math.min(1_000, baseDelayMs));
+  return Math.min(maxDelayMs, exponential + jitter);
+}
+
+function isRetryableStatusCode(statusCode) {
+  return (
+    statusCode === 408 ||
+    statusCode === 409 ||
+    statusCode === 425 ||
+    statusCode === 429 ||
+    statusCode >= 500
+  );
+}
+
+function parseRetryAfterMs(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  const seconds = Number.parseInt(String(value).trim(), 10);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const asDate = Date.parse(String(value));
+  if (Number.isFinite(asDate)) {
+    const delta = asDate - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+
+  return null;
+}
+
+function isRetryableFetchError(error) {
+  if (!error) {
+    return false;
+  }
+
+  if (error.name === "AbortError") {
+    return true;
+  }
+
+  const message = String(error.message ?? "").toLowerCase();
+  return /fetch failed|network|timeout|socket|econnreset|etimedout|econnrefused|enotfound|eai_again/i.test(
+    message,
+  );
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 function normalizeColorSpace(colorSpace) {
   return String(colorSpace ?? "RGB").trim().toUpperCase() === "CMYK" ? "CMYK" : "RGB";
@@ -1373,7 +1478,13 @@ async function resolveAppleEmojiPngBuffer(cluster, emojiRuntime, warnings) {
     if (emojiRuntime.baseUrl) {
       const url = `${emojiRuntime.baseUrl}/${codepointKey}.png`;
       try {
-        const response = await fetch(url);
+        const response = await fetchWithTimeout(
+          url,
+          {
+            method: "GET",
+          },
+          DEFAULT_EMOJI_REQUEST_TIMEOUT_MS,
+        );
         if (response.ok) {
           const bytes = Buffer.from(await response.arrayBuffer());
           emojiRuntime.bytesCache.set(cacheKey, bytes);
@@ -1958,7 +2069,7 @@ async function embedQrIntoPosterPdf({ posterPath, qrUrl, placement, qrHex = "FFF
   };
 }
 
-async function downloadFile({ url, outPath }) {
+async function downloadFile({ url, outPath, sourceRequestOptions = {} }) {
   if (!url) {
     throw new Error("Poster source URL is missing.");
   }
@@ -1967,18 +2078,54 @@ async function downloadFile({ url, outPath }) {
     throw new Error("Global fetch is unavailable. Use Node.js 18+.");
   }
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download poster PDF (${response.status}).`);
+  const requestOptions = normalizeSourceRequestOptions(sourceRequestOptions);
+  const maxAttempts = requestOptions.retries + 1;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(
+        url,
+        {
+          method: "GET",
+          redirect: "follow",
+        },
+        requestOptions.timeoutMs,
+      );
+
+      if (!response.ok) {
+        const retryable = isRetryableStatusCode(response.status);
+        if (retryable && attempt < maxAttempts) {
+          const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+          const delayMs =
+            retryAfterMs ?? computeBackoffDelayMs(attempt, requestOptions.retryBaseMs);
+          await sleep(delayMs);
+          continue;
+        }
+
+        throw new Error(`Failed to download poster PDF (${response.status}).`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      await fsp.writeFile(outPath, buffer);
+
+      return {
+        bytes: buffer.length,
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts && isRetryableFetchError(error)) {
+        const delayMs = computeBackoffDelayMs(attempt, requestOptions.retryBaseMs);
+        await sleep(delayMs);
+        continue;
+      }
+
+      throw error;
+    }
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  await fsp.writeFile(outPath, buffer);
-
-  return {
-    bytes: buffer.length,
-  };
+  throw lastError ?? new Error("Failed to download poster PDF.");
 }
 
 async function loadFont(fontPath) {
@@ -2019,6 +2166,7 @@ async function generateMaterialFiles({
   stickerSizeMm = DEFAULT_STICKER_SIZE_MM,
   colorSpace = "RGB",
   qrPlacementByFormat = {},
+  sourceRequestOptions = {},
   replaceWhiteWithOffWhite = true,
   offWhiteHex = "FFFEFA",
   whiteThreshold = 245,
@@ -2052,6 +2200,7 @@ async function generateMaterialFiles({
   await fsp.mkdir(orderOutputDir, { recursive: true });
   const normalizedColorSpace = normalizeColorSpace(colorSpace);
   const warnings = [];
+  const safeSourceRequestOptions = normalizeSourceRequestOptions(sourceRequestOptions);
   const safeWhiteReplaceIterations = Number.isFinite(Number(whiteReplaceIterations))
     ? Math.max(1, Math.min(3, Math.floor(Number(whiteReplaceIterations))))
     : 2;
@@ -2279,6 +2428,7 @@ async function generateMaterialFiles({
         details = await downloadFile({
           url: material.source_url,
           outPath: filePath,
+          sourceRequestOptions: safeSourceRequestOptions,
         });
 
         // Recolor poster before QR embedding so QR stays crisp and fully filled.
@@ -2374,6 +2524,34 @@ async function generateMaterialFiles({
   };
 }
 
+async function enforceOffWhiteInPdf({
+  filePath,
+  offWhiteHex = "FFFEFA",
+  rasterizeDpi = 300,
+}) {
+  return replaceWhiteInPdfWithOffWhiteInPlace({
+    filePath,
+    offWhiteHex,
+    threshold: 254,
+    maxSaturation: 0.25,
+    dpi: rasterizeDpi,
+    stripSoftMask: true,
+    mode: "threshold",
+    minAlpha: 0,
+    cleanupPasses: 0,
+    cleanupMinChannel: 254,
+    cleanupMaxSaturation: 0.25,
+    hardCleanupPasses: 2,
+    hardCleanupMinChannel: 246,
+    hardCleanupMinLightness: 98.5,
+    hardCleanupDeltaEMax: 14,
+    hardCleanupMaxSaturation: 0.6,
+    sanitizeTransparentRgb: true,
+    allowSoftMaskFallback: true,
+  });
+}
+
 module.exports = {
   generateMaterialFiles,
+  enforceOffWhiteInPdf,
 };

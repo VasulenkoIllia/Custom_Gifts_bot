@@ -11,8 +11,17 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
+    "migrate": "node dist/scripts/migrate.js",
+    "migrate:dev": "tsx src/scripts/migrate.ts",
     "start": "node dist/index.js",
-    "test": "tsc -p tsconfig.test.json && node --test .tmp-test-dist/tests/*.test.js"
+    "test": "tsc -p tsconfig.test.json && node --test .tmp-test-dist/tests/*.test.js",
+    "test:orders:business": "npm run build && node dist/scripts/business-logic-order-dry-run.js",
+    "test:orders:snapshot": "tsx src/scripts/snapshot-order-statuses.ts",
+    "test:orders:set-status": "tsx src/scripts/set-order-status.ts",
+    "test:orders:reset-state": "tsx src/scripts/reset-order-processing-state.ts",
+    "test:order:trigger": "tsx src/scripts/manual-order-trigger.ts",
+    "test:telegram:sync": "tsx src/scripts/telegram-sync-updates.ts",
+    "test:orders:restore": "tsx src/scripts/restore-order-statuses.ts"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
@@ -23,9 +32,11 @@
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
+    "emoji-datasource-apple": "^16.0.0",
     "pdf-lib": "^1.17.1",
     "pg": "^8.20.0",
     "pngjs": "^7.0.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "sharp": "^0.34.5"
   }
 }

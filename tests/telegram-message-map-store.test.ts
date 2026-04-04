@@ -85,6 +85,24 @@ class InMemoryTelegramDb implements DatabaseClient {
       };
     }
 
+    if (sql.startsWith("SELECT chat_id, message_id FROM telegram_message_map WHERE order_id = $1")) {
+      const orderId = String(params[0] ?? "").trim();
+      const rows = Array.from(this.messages.values())
+        .filter((row) => row.order_id === orderId)
+        .sort(
+          (left, right) =>
+            left.created_at.localeCompare(right.created_at) || left.message_id - right.message_id,
+        )
+        .map((row) => ({
+          chat_id: row.chat_id,
+          message_id: row.message_id,
+        }));
+      return {
+        rows: rows as TRow[],
+        rowCount: rows.length,
+      };
+    }
+
     if (sql.startsWith("UPDATE telegram_message_map SET last_heart_count = $3")) {
       const chatId = String(params[0] ?? "").trim();
       const messageId = Number.parseInt(String(params[1] ?? ""), 10);
@@ -204,4 +222,23 @@ test("DbTelegramMessageMapStore stores workflow state and heart count", async ()
   assert.equal(second?.highestStageIndex, 1);
   assert.equal(second?.appliedStatusId, 7);
   assert.equal(second?.lastHeartCount, 2);
+});
+
+test("DbTelegramMessageMapStore lists ordered file messages by order", async () => {
+  const db = new InMemoryTelegramDb();
+  const store = new DbTelegramMessageMapStore(db, 1000);
+  await store.init();
+
+  await store.linkMessages({
+    orderId: "3003",
+    chatId: "-100300",
+    messageIds: [701, 703, 702],
+  });
+
+  const messages = await store.listMessagesByOrder("3003");
+  assert.deepEqual(messages, [
+    { chatId: "-100300", messageId: 701 },
+    { chatId: "-100300", messageId: 703 },
+    { chatId: "-100300", messageId: 702 },
+  ]);
 });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { loadQrRules, resolveQrCodeDecision } from "../src/modules/qr/qr-rules";
@@ -65,4 +66,43 @@ test("resolveQrCodeDecision disables code for invalid url", async () => {
 
   assert.equal(decision.strategy, "none");
   assert.equal(decision.reason, "qr_url_invalid");
+});
+
+test("loadQrRules fails when no valid profiles exist", async () => {
+  const tempPath = path.resolve(process.cwd(), "storage/temp/tests/qr-rules/empty.json");
+  await fs.mkdir(path.dirname(tempPath), { recursive: true });
+  await fs.writeFile(tempPath, JSON.stringify({ profiles: [] }), "utf8");
+
+  await assert.rejects(async () => loadQrRules(tempPath), /at least one valid profile/i);
+});
+
+test("loadQrRules fails on duplicate SKU between profiles", async () => {
+  const tempPath = path.resolve(process.cwd(), "storage/temp/tests/qr-rules/duplicate-sku.json");
+  await fs.mkdir(path.dirname(tempPath), { recursive: true });
+  await fs.writeFile(
+    tempPath,
+    JSON.stringify({
+      profiles: [
+        {
+          id: "p1",
+          skus: ["SKU_DUP"],
+          qrPlacementByFormat: {
+            A5: { mode: "right_bottom", widthMm: 20, heightMm: 20, rightMm: 10, bottomMm: 10 },
+            A4: { mode: "right_bottom", widthMm: 30, heightMm: 30, rightMm: 15, bottomMm: 15 },
+          },
+        },
+        {
+          id: "p2",
+          skus: ["SKU_DUP"],
+          qrPlacementByFormat: {
+            A5: { mode: "right_bottom", widthMm: 20, heightMm: 20, rightMm: 10, bottomMm: 10 },
+            A4: { mode: "right_bottom", widthMm: 30, heightMm: 30, rightMm: 15, bottomMm: 15 },
+          },
+        },
+      ],
+    }),
+    "utf8",
+  );
+
+  await assert.rejects(async () => loadQrRules(tempPath), /assigned to multiple profiles/i);
 });

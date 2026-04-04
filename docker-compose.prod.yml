@@ -1,9 +1,28 @@
-name: custom-gifts-prod
+name: cgbot-prod
+
+x-app-base: &app-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: custom-gifts-bot:prod
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+  env_file:
+    - .env.production
+  environment:
+    HOST: 0.0.0.0
+    PORT: 3000
+    TZ: ${TZ:-Europe/Kyiv}
+    DATABASE_URL: ${DATABASE_URL:-postgres://custom_gifts:${POSTGRES_PASSWORD:-change_me}@postgres:5432/custom_gifts_bot}
+  networks:
+    - backend
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: custom-gifts-postgres
+    container_name: cgbot-prod-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-custom_gifts_bot}
@@ -16,38 +35,64 @@ services:
       retries: 10
       start_period: 15s
     volumes:
-      - cgu_prod_postgres_data:/var/lib/postgresql/data
+      - cgbot_prod_postgres_data:/var/lib/postgresql/data
     networks:
       - backend
 
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: custom-gifts-bot:prod
-    container_name: custom-gifts-bot
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file:
-      - .env.production
+  receiver:
+    <<: *app-base
+    container_name: cgbot-prod-receiver
     environment:
+      APP_ROLE: receiver
       HOST: 0.0.0.0
       PORT: 3000
+      TZ: ${TZ:-Europe/Kyiv}
       DATABASE_URL: ${DATABASE_URL:-postgres://custom_gifts:${POSTGRES_PASSWORD:-change_me}@postgres:5432/custom_gifts_bot}
-    ports:
-      - "${APP_PORT:-3000}:3000"
-    volumes:
-      - cgu_prod_output_data:/app/storage/files/materials
-      - cgu_prod_temp_data:/app/storage/temp
     networks:
       - backend
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-proxy}"
+      - "traefik.http.routers.cgbot.rule=Host(`${APP_DOMAIN:-cgbot.workflo.space}`)"
+      - "traefik.http.routers.cgbot.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.cgbot.tls.certresolver=${TRAEFIK_CERTRESOLVER:-cf}"
+      - "traefik.http.services.cgbot.loadbalancer.server.port=3000"
+
+  migrate:
+    <<: *app-base
+    container_name: cgbot-prod-migrate
+    profiles: ["ops"]
+    restart: "no"
+    command: ["npm", "run", "migrate"]
+
+  order-worker:
+    <<: *app-base
+    container_name: cgbot-prod-order-worker
+    environment:
+      APP_ROLE: order_worker
+      TZ: ${TZ:-Europe/Kyiv}
+      DATABASE_URL: ${DATABASE_URL:-postgres://custom_gifts:${POSTGRES_PASSWORD:-change_me}@postgres:5432/custom_gifts_bot}
+    volumes:
+      - cgbot_prod_output_data:/app/storage/files/materials
+      - cgbot_prod_temp_data:/app/storage/temp
+
+  reaction-worker:
+    <<: *app-base
+    container_name: cgbot-prod-reaction-worker
+    environment:
+      APP_ROLE: reaction_worker
+      TZ: ${TZ:-Europe/Kyiv}
+      DATABASE_URL: ${DATABASE_URL:-postgres://custom_gifts:${POSTGRES_PASSWORD:-change_me}@postgres:5432/custom_gifts_bot}
 
 networks:
   backend:
+    driver: bridge
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-proxy}
 
 volumes:
-  cgu_prod_postgres_data:
-  cgu_prod_output_data:
-  cgu_prod_temp_data:
+  cgbot_prod_postgres_data:
+  cgbot_prod_output_data:
+  cgbot_prod_temp_data:

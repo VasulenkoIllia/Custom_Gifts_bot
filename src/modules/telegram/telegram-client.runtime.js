@@ -125,8 +125,31 @@ function ensureRuntimeApis() {
   }
 }
 
+function formatDisplayFlag(flag) {
+  const normalized = String(flag ?? "").trim();
+  if (normalized) {
+    return `📌 ${normalized}`;
+  }
+
+  return "";
+}
+
 function buildCaption({ orderId, fileNames, flags, warnings, qrUrl }) {
-  const lines = [`Замовлення ${orderId}`, "", "Файли:"];
+  const normalizedWarnings = Array.isArray(warnings)
+    ? warnings.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+  const normalizedFlags = Array.isArray(flags)
+    ? flags.map((item) => formatDisplayFlag(item)).filter(Boolean)
+    : [];
+  const lines = [];
+
+  if (normalizedWarnings.length > 0) {
+    lines.push("Попередження:", ...normalizedWarnings, "", `Замовлення ${orderId}`);
+  } else {
+    lines.push(`✅ Замовлення ${orderId}`);
+  }
+
+  lines.push("", "Файли:");
   for (const fileName of fileNames) {
     lines.push(fileName);
   }
@@ -135,12 +158,8 @@ function buildCaption({ orderId, fileNames, flags, warnings, qrUrl }) {
     lines.push("", `Посилання QR: ${qrUrl}`);
   }
 
-  if (Array.isArray(flags) && flags.length) {
-    lines.push("", ...flags);
-  }
-
-  if (Array.isArray(warnings) && warnings.length) {
-    lines.push("", "Примітки:", ...warnings);
+  if (normalizedFlags.length) {
+    lines.push("", ...normalizedFlags);
   }
 
   const caption = lines.join("\n");
@@ -447,26 +466,37 @@ async function sendPreviewPhotos({
 }) {
   const urls = Array.isArray(previewImages) ? previewImages.filter(Boolean) : [];
   if (urls.length === 0) {
-    return [];
+    return {
+      messages: [],
+      errors: [],
+    };
   }
 
   const messages = [];
+  const errors = [];
   for (let index = 0; index < urls.length; index += 1) {
     const caption = index === 0 ? `Замовлення ${orderId}\nПрев'ю макету` : undefined;
-    const message = await sendSinglePreviewPhoto({
-      botToken,
-      chatId,
-      messageThreadId,
-      photoUrl: urls[index],
-      caption,
-      requestOptions,
-    });
-    if (message) {
-      messages.push(message);
+    try {
+      const message = await sendSinglePreviewPhoto({
+        botToken,
+        chatId,
+        messageThreadId,
+        photoUrl: urls[index],
+        caption,
+        requestOptions,
+      });
+      if (message) {
+        messages.push(message);
+      }
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
     }
   }
 
-  return messages;
+  return {
+    messages,
+    errors,
+  };
 }
 
 async function sendGeneratedFiles({
@@ -540,21 +570,22 @@ async function sendOrderFilesToTelegram({
   ensureValue(chatId, "TELEGRAM_CHAT_ID");
 
   const fileNames = generatedFiles.map((file) => file.filename);
-  const caption = buildCaption({
-    orderId,
-    fileNames,
-    flags,
-    warnings,
-    qrUrl,
-  });
-
-  const previewMessages = await sendPreviewPhotos({
+  const previewResult = await sendPreviewPhotos({
     botToken,
     chatId,
     messageThreadId,
     orderId,
     previewImages,
     requestOptions,
+  });
+  const previewMessages = previewResult.messages;
+  const previewWarnings = previewResult.errors.map((message) => `⚠️ Preview warning: ${message}`);
+  const caption = buildCaption({
+    orderId,
+    fileNames,
+    flags,
+    warnings: [...(Array.isArray(warnings) ? warnings : []), ...previewWarnings],
+    qrUrl,
   });
 
   const sentMessages = await sendGeneratedFiles({
@@ -574,6 +605,7 @@ async function sendOrderFilesToTelegram({
     message_thread_id: messageThreadId || null,
     preview_count: previewMessages.length,
     preview_message_ids: previewMessages.map((message) => message.message_id),
+    preview_errors: previewResult.errors,
     message_count: allMessages.length,
     message_ids: allMessages.map((message) => message.message_id),
     caption,
@@ -581,5 +613,6 @@ async function sendOrderFilesToTelegram({
 }
 
 module.exports = {
+  buildCaption,
   sendOrderFilesToTelegram,
 };

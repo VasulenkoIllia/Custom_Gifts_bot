@@ -17,6 +17,16 @@ export class QueueOverflowError extends Error {
   }
 }
 
+export class QueueClosedError extends Error {
+  readonly statusCode: number;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "QueueClosedError";
+    this.statusCode = 503;
+  }
+}
+
 type InternalJob<TPayload> = QueueJob<TPayload> & {
   deadLettered: boolean;
 };
@@ -36,7 +46,9 @@ export class QueueService<TPayload> {
   private readonly pending: InternalJob<TPayload>[] = [];
   private readonly running = new Map<string, InternalJob<TPayload>>();
   private readonly inFlightByKey = new Map<string, Promise<void>>();
+  private readonly scheduledRetries = new Map<NodeJS.Timeout, InternalJob<TPayload>>();
   private sequence = 0;
+  private closed = false;
 
   constructor(options: QueueOptions<TPayload>) {
     this.name = options.name;
@@ -61,6 +73,10 @@ export class QueueService<TPayload> {
   }
 
   enqueue(input: QueueEnqueueInput<TPayload>): QueueEnqueueResult {
+    if (this.closed) {
+      throw new QueueClosedError(`Queue ${this.name} is closed.`);
+    }
+
     const key = String(input.key ?? "").trim();
     if (!key) {
       throw new Error("Queue key is required.");
@@ -126,22 +142,30 @@ export class QueueService<TPayload> {
       return;
     }
 
-    this.onStateChange({
-      queue: this.name,
-      key: job.key,
-      jobId: job.id,
-      status: job.status,
-      attempt: job.attempt,
-      maxAttempts: job.maxAttempts,
-      willRetry: retryMeta.willRetry,
-      retryDelayMs: retryMeta.retryDelayMs,
-      payload: job.payload,
-      error: error instanceof Error ? error.message : error ? String(error) : undefined,
-      stats: this.getStats(),
-    });
+    try {
+      this.onStateChange({
+        queue: this.name,
+        key: job.key,
+        jobId: job.id,
+        status: job.status,
+        attempt: job.attempt,
+        maxAttempts: job.maxAttempts,
+        willRetry: retryMeta.willRetry,
+        retryDelayMs: retryMeta.retryDelayMs,
+        payload: job.payload,
+        error: error instanceof Error ? error.message : error ? String(error) : undefined,
+        stats: this.getStats(),
+      });
+    } catch (_error) {
+      // Queue processing must continue even if logging callback fails.
+    }
   }
 
   private drain(): void {
+    if (this.closed && this.pending.length === 0) {
+      return;
+    }
+
     while (this.running.size < this.concurrency) {
       const next = this.pending.shift();
       if (!next) {
@@ -158,13 +182,30 @@ export class QueueService<TPayload> {
     this.running.set(job.id, job);
     this.emitState(job);
 
-    void this.execute(job);
+    void this.execute(job).catch(() => {
+      // execute() must not leak unhandled rejections
+    });
   }
 
   private async execute(job: InternalJob<TPayload>): Promise<void> {
     let willRetry = false;
+    let keepInFlightUntilSettled = false;
+    const handlerPromise = this.handler(job);
+    let handlerSettled = false;
+    void handlerPromise
+      .finally(() => {
+        handlerSettled = true;
+        if (keepInFlightUntilSettled) {
+          this.inFlightByKey.delete(job.key);
+          this.drain();
+        }
+      })
+      .catch(() => {
+        // handler rejection is observed by withTimeout/execute catch path
+      });
+
     try {
-      await this.withTimeout(this.handler(job), this.jobTimeoutMs, `Queue job timeout in ${this.name}.`);
+      await this.withTimeout(handlerPromise, this.jobTimeoutMs, `Queue job timeout in ${this.name}.`);
       job.status = "completed";
       job.finishedAt = Date.now();
       this.emitState(job);
@@ -183,19 +224,31 @@ export class QueueService<TPayload> {
           willRetry: true,
           retryDelayMs,
         });
-        setTimeout(() => {
+        const timer = setTimeout(() => {
+          this.scheduledRetries.delete(timer);
+          if (this.closed) {
+            this.inFlightByKey.delete(job.key);
+            this.drain();
+            return;
+          }
+
           this.pending.push(job);
           this.drain();
         }, retryDelayMs);
+        this.scheduledRetries.set(timer, job);
       } else {
         job.status = "failed";
         job.finishedAt = Date.now();
         this.emitState(job, error);
         await this.handleDeadLetter(job, error);
+
+        if (error instanceof QueueJobTimeoutError && !handlerSettled) {
+          keepInFlightUntilSettled = true;
+        }
       }
     } finally {
       this.running.delete(job.id);
-      if (!willRetry) {
+      if (!willRetry && !keepInFlightUntilSettled) {
         this.inFlightByKey.delete(job.key);
       }
       this.drain();
@@ -236,7 +289,11 @@ export class QueueService<TPayload> {
       finishedAt: job.finishedAt ?? Date.now(),
     };
 
-    await this.onDeadLetter(event);
+    try {
+      await this.onDeadLetter(event);
+    } catch (_deadLetterError) {
+      // Queue should not crash when DLQ callback fails (e.g. DB/Telegram outage).
+    }
   }
 
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -247,7 +304,7 @@ export class QueueService<TPayload> {
     let timeoutId: NodeJS.Timeout | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(() => {
-        reject(new Error(message));
+        reject(new QueueJobTimeoutError(message));
       }, timeoutMs);
     });
 
@@ -257,4 +314,38 @@ export class QueueService<TPayload> {
       }
     });
   }
+
+  async close(timeoutMs = 30_000): Promise<void> {
+    this.closed = true;
+
+    for (const [timer, job] of this.scheduledRetries.entries()) {
+      clearTimeout(timer);
+      this.scheduledRetries.delete(timer);
+      this.inFlightByKey.delete(job.key);
+    }
+
+    const startedAt = Date.now();
+    while (this.pending.length > 0 || this.running.size > 0) {
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(
+          `Queue ${this.name} shutdown timeout: pending=${this.pending.length}, running=${this.running.size}.`,
+        );
+      }
+
+      await sleep(50);
+    }
+  }
+}
+
+class QueueJobTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "QueueJobTimeoutError";
+  }
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
 }

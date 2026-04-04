@@ -1,10 +1,12 @@
 import type { CrmClient } from "../modules/crm/crm-client";
 import {
+  extractErrorMessage,
   isLikelyTransientErrorMessage,
   OrderProcessingError,
+  resolveRetryableError,
 } from "../modules/errors/worker-errors";
 import type { LayoutPlanBuilder } from "../modules/layout/layout-plan-builder";
-import type { PdfPipelineService } from "../modules/pdf/pdf-pipeline.service";
+import { resolveCaptionQrUrl, type PdfPipelineService } from "../modules/pdf/pdf-pipeline.service";
 import type { OrderIntakeJobPayload } from "../modules/queue/queue-jobs";
 import type { QueueHandler } from "../modules/queue/queue.types";
 import type { TelegramDeliveryService } from "../modules/telegram/telegram-delivery.service";
@@ -85,11 +87,11 @@ export function createOrderIntakeWorker({
         layoutPlan,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = extractErrorMessage(error);
       throw new OrderProcessingError({
         message: `PDF pipeline exception: ${message}`,
         orderId,
-        retryable: isLikelyTransientErrorMessage(message),
+        retryable: resolveRetryableError(error),
         failureKind: "pdf_generation",
       });
     }
@@ -118,6 +120,10 @@ export function createOrderIntakeWorker({
     const telegramWarnings = Array.from(
       new Set([...layoutPlan.notes, ...pdfResult.warnings]),
     );
+    const captionQrUrl = resolveCaptionQrUrl({
+      layoutPlan,
+      generatedFiles: pdfResult.generated,
+    });
 
     let telegramResult;
     try {
@@ -125,25 +131,45 @@ export function createOrderIntakeWorker({
         orderId,
         flags: layoutPlan.flags,
         warnings: telegramWarnings,
-        qrUrl: layoutPlan.qr.url,
+        qrUrl: captionQrUrl,
         previewImages: layoutPlan.previewImages,
         generatedFiles: pdfResult.generated,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = extractErrorMessage(error);
       throw new OrderProcessingError({
         message: `Telegram delivery failed: ${message}`,
         orderId,
-        retryable: isLikelyTransientErrorMessage(message),
+        retryable: resolveRetryableError(error),
         failureKind: "telegram_delivery",
       });
     }
 
-    const linked = await telegramMessageMapStore.linkMessages({
-      orderId: String(order.id),
-      chatId: telegramResult.chatId,
-      messageIds: telegramResult.messageIds,
-    });
+    let linked;
+    try {
+      linked = await telegramMessageMapStore.linkMessages({
+        orderId: String(order.id),
+        chatId: telegramResult.chatId,
+        messageIds: telegramResult.messageIds,
+      });
+    } catch (error) {
+      const message = extractErrorMessage(error);
+      throw new OrderProcessingError({
+        message: `Telegram message mapping failed: ${message}`,
+        orderId,
+        retryable: resolveRetryableError(error),
+        failureKind: "telegram_delivery",
+      });
+    }
+
+    if (linked.linked <= 0) {
+      throw new OrderProcessingError({
+        message: "Telegram message mapping failed: no file messages were linked.",
+        orderId,
+        retryable: true,
+        failureKind: "telegram_delivery",
+      });
+    }
 
     logger.info("order_telegram_delivery_completed", {
       orderId: String(order.id),
@@ -151,7 +177,16 @@ export function createOrderIntakeWorker({
       previewMessageIds: telegramResult.previewMessageIds,
       messageIds: telegramResult.messageIds,
       linkedMessages: linked.linked,
+      warnings: telegramResult.warnings ?? [],
       jobId: job.id,
     });
+
+    if (Array.isArray(telegramResult.warnings) && telegramResult.warnings.length > 0) {
+      logger.warn("order_telegram_delivery_preview_warnings", {
+        orderId: String(order.id),
+        warnings: telegramResult.warnings,
+        jobId: job.id,
+      });
+    }
   };
 }

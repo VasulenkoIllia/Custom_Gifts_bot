@@ -80,6 +80,8 @@
     "urgentFlag": ["Термінове виготовлення", "Термінове", "Urgent"],
     "qrFlag": ["QR-код", "QR код", "QR code"],
     "qrUrl": ["Посилання до QR-коду", "Посилання до QR коду", "QR link", "Link to QR"],
-    "livePhotoFlag": ["Live Photo", "Live photo"]
+    "livePhotoFlag": ["Live Photo", "Live photo"],
+    "manualA6Flag": ["A6", "А6"],
+    "keychainFlag": ["Брелок", "Keychain"]
   }
 }

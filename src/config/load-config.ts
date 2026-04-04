@@ -1,4 +1,5 @@
 import type { AppConfig } from "./config.types";
+import fs from "node:fs";
 import path from "node:path";
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -7,6 +8,31 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
     return fallback;
   }
   return parsed;
+}
+
+function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function parseCsv(value: string | undefined, fallback: string[]): string[] {
@@ -36,13 +62,50 @@ function parseEmojiRenderMode(value: string | undefined): "font" | "apple_image"
   return String(value ?? "apple_image").trim().toLowerCase() === "font" ? "font" : "apple_image";
 }
 
+function parseTelegramForwardMode(value: string | undefined): "copy" | "forward" {
+  return String(value ?? "copy").trim().toLowerCase() === "forward" ? "forward" : "copy";
+}
+
+function parseAppRole(
+  value: string | undefined,
+): "all" | "receiver" | "workers" | "order_worker" | "reaction_worker" {
+  const normalized = String(value ?? "all").trim().toLowerCase();
+  if (
+    normalized === "receiver" ||
+    normalized === "workers" ||
+    normalized === "order_worker" ||
+    normalized === "reaction_worker"
+  ) {
+    return normalized;
+  }
+
+  return "all";
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
+  const configuredAppleEmojiAssetsDir = String(env.APPLE_EMOJI_ASSETS_DIR ?? "").trim();
+  const defaultAppleEmojiAssetsDir = path.resolve(
+    process.cwd(),
+    "node_modules/emoji-datasource-apple/img/apple/64",
+  );
+  const resolvedAppleEmojiAssetsDir = configuredAppleEmojiAssetsDir
+    ? path.resolve(process.cwd(), configuredAppleEmojiAssetsDir)
+    : fs.existsSync(defaultAppleEmojiAssetsDir)
+      ? defaultAppleEmojiAssetsDir
+      : "";
+
   return {
+    appRole: parseAppRole(env.APP_ROLE),
     host: String(env.HOST ?? "127.0.0.1").trim() || "127.0.0.1",
     port: Number.parseInt(env.PORT ?? "3000", 10),
     projectPhase: "stage_f_pdf_pipeline",
     databaseUrl: String(env.DATABASE_URL ?? "").trim(),
     databasePoolMax: parsePositiveInteger(env.DATABASE_POOL_MAX, 10),
+    databaseAutoMigrateOnBoot: parseBoolean(env.DATABASE_AUTO_MIGRATE_ON_BOOT, false),
+    databaseMigrationsDir: path.resolve(
+      process.cwd(),
+      String(env.DATABASE_MIGRATIONS_DIR ?? "migrations"),
+    ),
     requestBodyLimitBytes: parsePositiveInteger(env.REQUEST_BODY_LIMIT_BYTES, 1_000_000),
     keycrmApiBase: String(env.KEYCRM_API_BASE ?? "").trim(),
     keycrmToken: String(env.KEYCRM_TOKEN ?? "").trim(),
@@ -58,10 +121,24 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     keycrmRequestTimeoutMs: parsePositiveInteger(env.KEYCRM_REQUEST_TIMEOUT_MS, 15_000),
     keycrmRequestRetries: parsePositiveInteger(env.KEYCRM_REQUEST_RETRIES, 2),
     keycrmRequestRetryBaseMs: parsePositiveInteger(env.KEYCRM_REQUEST_RETRY_BASE_MS, 500),
+    spotifyRequestTimeoutMs: parsePositiveInteger(env.SPOTIFY_REQUEST_TIMEOUT_MS, 12_000),
+    spotifyRequestRetries: parsePositiveInteger(env.SPOTIFY_REQUEST_RETRIES, 2),
+    spotifyRequestRetryBaseMs: parsePositiveInteger(env.SPOTIFY_REQUEST_RETRY_BASE_MS, 700),
+    shortenerRequestTimeoutMs: parsePositiveInteger(env.SHORTENER_REQUEST_TIMEOUT_MS, 7_000),
+    shortenerRequestRetries: parsePositiveInteger(env.SHORTENER_REQUEST_RETRIES, 2),
+    shortenerRequestRetryBaseMs: parsePositiveInteger(env.SHORTENER_REQUEST_RETRY_BASE_MS, 500),
+    lnkUaBearerToken: String(env.LNK_UA_BEARER_TOKEN ?? "").trim(),
+    cuttlyApiKey: String(env.CUTTLY_API_KEY ?? "").trim(),
+    pdfSourceRequestTimeoutMs: parsePositiveInteger(env.PDF_SOURCE_REQUEST_TIMEOUT_MS, 20_000),
+    pdfSourceRequestRetries: parsePositiveInteger(env.PDF_SOURCE_REQUEST_RETRIES, 2),
+    pdfSourceRequestRetryBaseMs: parsePositiveInteger(env.PDF_SOURCE_REQUEST_RETRY_BASE_MS, 800),
     keycrmWebhookSecret: String(env.KEYCRM_WEBHOOK_SECRET ?? "").trim(),
     telegramBotToken: String(env.TELEGRAM_BOT_TOKEN ?? "").trim(),
     telegramChatId: String(env.TELEGRAM_CHAT_ID ?? "").trim(),
     telegramMessageThreadId: String(env.TELEGRAM_MESSAGE_THREAD_ID ?? "").trim(),
+    telegramOrdersChatId: String(env.TELEGRAM_ORDERS_CHAT_ID ?? "").trim(),
+    telegramOrdersThreadId: String(env.TELEGRAM_ORDERS_THREAD_ID ?? "").trim(),
+    telegramForwardMode: parseTelegramForwardMode(env.TELEGRAM_FORWARD_MODE),
     telegramOpsChatId: String(env.TELEGRAM_OPS_CHAT_ID ?? "").trim(),
     telegramOpsThreadId: String(env.TELEGRAM_OPS_THREAD_ID ?? "").trim(),
     telegramReactionSecretToken: String(env.TELEGRAM_REACTION_SECRET_TOKEN ?? "").trim(),
@@ -81,6 +158,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     reactionQueueMaxAttempts: parsePositiveInteger(env.REACTION_QUEUE_MAX_ATTEMPTS, 2),
     reactionQueueRetryBaseMs: parsePositiveInteger(env.REACTION_QUEUE_RETRY_BASE_MS, 500),
     queueJobTimeoutMs: parsePositiveInteger(env.QUEUE_JOB_TIMEOUT_MS, 10 * 60 * 1000),
+    queuePollIntervalMs: parsePositiveInteger(env.QUEUE_POLL_INTERVAL_MS, 1_000),
     idempotencyMaxEntries: parsePositiveInteger(env.IDEMPOTENCY_MAX_ENTRIES, 50_000),
     productCodeRulesPath: path.resolve(
       process.cwd(),
@@ -94,10 +172,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       ),
     ),
     telegramMessageMapMaxEntries: parsePositiveInteger(env.TELEGRAM_MESSAGE_MAP_MAX_ENTRIES, 50_000),
-    telegramLegacyClientPath: path.resolve(
-      process.cwd(),
-      String(env.TELEGRAM_LEGACY_CLIENT_PATH ?? "reference/legacy-js/telegram-client.js"),
-    ),
     qrRulesPath: path.resolve(
       process.cwd(),
       String(env.QR_RULES_PATH ?? "config/business-rules/qr-rules.json"),
@@ -113,22 +187,27 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     outputRetentionHours: parsePositiveInteger(env.OUTPUT_RETENTION_HOURS, 168),
     tempRetentionHours: parsePositiveInteger(env.TEMP_RETENTION_HOURS, 24),
     cleanupIntervalMs: parsePositiveInteger(env.CLEANUP_INTERVAL_MS, 60 * 60 * 1000),
+    dbCleanupIntervalMs: parsePositiveInteger(env.DB_CLEANUP_INTERVAL_MS, 60 * 60 * 1000),
+    queueJobRetentionHours: parsePositiveInteger(env.QUEUE_JOB_RETENTION_HOURS, 72),
+    telegramDeliveryRetentionHours: parsePositiveInteger(
+      env.TELEGRAM_DELIVERY_RETENTION_HOURS,
+      24 * 30,
+    ),
+    forwardingBatchRetentionHours: parsePositiveInteger(
+      env.FORWARDING_BATCH_RETENTION_HOURS,
+      24 * 30,
+    ),
+    deadLetterRetentionHours: parsePositiveInteger(env.DEAD_LETTER_RETENTION_HOURS, 24 * 14),
     fontPath: path.resolve(
       process.cwd(),
-      String(env.FONT_PATH ?? "reference/legacy-js/Caveat-VariableFont_wght.ttf"),
+      String(env.FONT_PATH ?? "assets/fonts/Caveat-VariableFont_wght.ttf"),
     ),
     emojiFontPath: String(env.EMOJI_FONT_PATH ?? "").trim()
       ? path.resolve(process.cwd(), String(env.EMOJI_FONT_PATH ?? "").trim())
       : "",
     emojiRenderMode: parseEmojiRenderMode(env.EMOJI_RENDER_MODE),
     appleEmojiBaseUrl: String(env.APPLE_EMOJI_BASE_URL ?? "").trim(),
-    appleEmojiAssetsDir: String(env.APPLE_EMOJI_ASSETS_DIR ?? "").trim()
-      ? path.resolve(process.cwd(), String(env.APPLE_EMOJI_ASSETS_DIR ?? "").trim())
-      : "",
-    pdfLegacyModulePath: path.resolve(
-      process.cwd(),
-      String(env.PDF_LEGACY_MODULE_PATH ?? "reference/legacy-js/material-generator.js"),
-    ),
+    appleEmojiAssetsDir: resolvedAppleEmojiAssetsDir,
     pdfColorSpace: parseColorSpace(env.PDF_COLOR_SPACE),
     pdfStickerSizeMm: parsePositiveFloat(env.STICKER_SIZE_MM, 100),
     pdfOffWhiteHex: String(env.OFFWHITE_HEX ?? "FFFEFA")
@@ -142,5 +221,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     qrA4RightMm: parsePositiveFloat(env.QR_A4_RIGHT_MM, 10),
     qrA4BottomMm: parsePositiveFloat(env.QR_A4_BOTTOM_MM, 10),
     qrA4SizeMm: parsePositiveFloat(env.QR_A4_SIZE_MM, 30),
+    readinessProbeTimeoutMs: parsePositiveInteger(env.READINESS_PROBE_TIMEOUT_MS, 5_000),
+    readinessMinDiskFreeBytes: parseNonNegativeInteger(
+      env.READINESS_MIN_DISK_FREE_BYTES,
+      512 * 1024 * 1024,
+    ),
   };
 }
