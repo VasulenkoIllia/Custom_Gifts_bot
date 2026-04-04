@@ -2341,7 +2341,9 @@ async function generateMaterialFiles({
         hardCleanupDeltaEMax: safeWhiteHardCleanupDeltaEMax,
         hardCleanupMaxSaturation: safeWhiteHardCleanupMaxSaturation,
         sanitizeTransparentRgb: safeWhiteSanitizeTransparentRgb,
-        allowSoftMaskFallback: whiteAllowSoftMaskFallback,
+        // Posters can contain intentional transparent islands inside the visible bounds.
+        // Preserve alpha in that case; otherwise transparent controls get flattened to black.
+        allowSoftMaskFallback: stripSoftMask ? true : whiteAllowSoftMaskFallback,
       });
       lastStats = passStats;
       iterationsUsed += 1;
