@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PdfGeneratedFile } from "../pdf/pdf.types";
 import type { TelegramDeliveryRecord } from "./db-telegram-delivery-store";
+import { sendOrderFilesToTelegram, type SendOrderFilesResult } from "./telegram-client";
 
 type TelegramRequestOptions = {
   timeoutMs: number;
@@ -25,31 +26,6 @@ type TelegramDeliveryResult = {
   warnings?: string[];
 };
 
-type TelegramClientSendOrderFilesResult = {
-  chat_id?: string | number;
-  preview_message_ids?: Array<number | string>;
-  message_ids?: Array<number | string>;
-  caption?: string;
-  preview_errors?: string[];
-};
-
-type SendOrderFilesToTelegram = (input: {
-  botToken: string;
-  chatId: string;
-  messageThreadId?: string;
-  orderId: string;
-  flags: string[];
-  warnings: string[];
-  qrUrl: string | null;
-  previewImages: string[];
-  generatedFiles: Array<{ path: string; filename: string }>;
-  requestOptions?: TelegramRequestOptions;
-}) => Promise<TelegramClientSendOrderFilesResult>;
-
-type TelegramClientRuntimeModule = {
-  sendOrderFilesToTelegram: SendOrderFilesToTelegram;
-};
-
 type CreateTelegramDeliveryServiceParams = {
   botToken: string;
   chatId: string;
@@ -70,11 +46,8 @@ type CreateTelegramDeliveryServiceParams = {
     release: (deliveryKey: string, leaseOwner: string) => Promise<void>;
   } | null;
   leaseTtlMs?: number;
-  sender?: SendOrderFilesToTelegram;
+  sender?: typeof sendOrderFilesToTelegram;
 };
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const telegramClientRuntime = require("./telegram-client.runtime.js") as TelegramClientRuntimeModule;
 
 function normalizeMessageIds(values: Array<number | string> | undefined): number[] {
   const result: number[] = [];
@@ -97,7 +70,7 @@ export class TelegramDeliveryService {
     | null;
   private readonly leaseTtlMs: number;
   private readonly leaseOwner: string;
-  private readonly sendOrderFilesToTelegram: SendOrderFilesToTelegram;
+  private readonly sendOrderFilesToTelegram: typeof sendOrderFilesToTelegram;
 
   constructor(params: CreateTelegramDeliveryServiceParams) {
     this.botToken = String(params.botToken ?? "").trim();
@@ -109,11 +82,7 @@ export class TelegramDeliveryService {
       ? Math.max(1_000, Math.floor(Number(params.leaseTtlMs)))
       : 10 * 60 * 1000;
     this.leaseOwner = `telegram_delivery:${randomUUID()}`;
-    this.sendOrderFilesToTelegram =
-      params.sender ?? telegramClientRuntime.sendOrderFilesToTelegram;
-    if (typeof this.sendOrderFilesToTelegram !== "function") {
-      throw new Error("Telegram client runtime is invalid.");
-    }
+    this.sendOrderFilesToTelegram = params.sender ?? sendOrderFilesToTelegram;
   }
 
   async sendOrderMaterials(input: TelegramDeliveryInput): Promise<TelegramDeliveryResult> {

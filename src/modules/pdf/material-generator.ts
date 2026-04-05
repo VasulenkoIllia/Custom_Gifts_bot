@@ -1,13 +1,25 @@
-"use strict";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { PDFDocument, rgb } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
+import type { Font, Glyph, GlyphPosition, GlyphRun } from "@pdf-lib/fontkit";
+import QRCode from "qrcode";
+import { PNG } from "pngjs";
 
-const fs = require("node:fs");
-const fsp = require("node:fs/promises");
-const path = require("node:path");
-const { spawn } = require("node:child_process");
-const { PDFDocument, rgb } = require("pdf-lib");
-const fontkit = require("@pdf-lib/fontkit");
-const QRCode = require("qrcode");
-const { PNG } = require("pngjs");
+// ---------------------------------------------------------------------------
+// Internal fontkit extension – `commands` and `name` are not in the public types
+// ---------------------------------------------------------------------------
+
+type PathCommand = { command: string; args?: number[] };
+type FontkitPathInternal = { commands?: PathCommand[] };
+// `name` (e.g. ".notdef") exists at runtime but is absent from the public Glyph interface
+type GlyphInternal = Glyph & { name?: string | null };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
 const A3_WIDTH_MM = 297;
 const A3_HEIGHT_MM = 420;
@@ -21,22 +33,316 @@ const DEFAULT_SOURCE_REQUEST_RETRIES = 2;
 const DEFAULT_SOURCE_REQUEST_RETRY_BASE_MS = 800;
 const DEFAULT_EMOJI_REQUEST_TIMEOUT_MS = 10_000;
 
-const ENGRAVING_ZONE_BY_FORMAT = {
+const ENGRAVING_ZONE_BY_FORMAT: Record<string, { widthMm: number; heightMm: number }> = {
   A5: { widthMm: 148, heightMm: 22 },
   A4: { widthMm: 210, heightMm: 22 },
 };
 
-const mmToPt = (mm) => (mm * 72) / 25.4;
+const mmToPt = (mm: number): number => (mm * 72) / 25.4;
 
-let ghostscriptVersionPromise = null;
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
-function sleep(delayMs) {
+type SourceRequestOptions = {
+  timeoutMs?: number;
+  retries?: number;
+  retryBaseMs?: number;
+};
+
+type NormalizedSourceRequestOptions = {
+  timeoutMs: number;
+  retries: number;
+  retryBaseMs: number;
+};
+
+type RgbColor = { r: number; g: number; b: number; hex: string };
+
+type WhiteMaskOptions = {
+  png: PNG;
+  threshold: number;
+  maxSaturation: number;
+  minAlpha: number;
+  premultiplied: boolean;
+};
+
+type PhotoshopLikeMaskOptions = WhiteMaskOptions & {
+  labDeltaEMax: number;
+  labSoftness: number;
+  minLightness: number;
+};
+
+type ResidualCleanupMaskOptions = {
+  png: PNG;
+  minAlpha: number;
+  premultiplied: boolean;
+  strictMinChannel?: number;
+  strictMaxSaturation?: number;
+};
+
+type HardCleanupMaskOptions = {
+  png: PNG;
+  minAlpha: number;
+  premultiplied: boolean;
+  hardMinChannel?: number;
+  hardMinLightness?: number;
+  hardDeltaEMax?: number;
+  hardMaxSaturation?: number;
+};
+
+type FillPinholeOptions = {
+  png: PNG;
+  mask: Float32Array;
+  minNeighborMask?: number;
+  maxAlpha?: number;
+  minNeighbors?: number;
+};
+
+type ApplyMaskOptions = {
+  png: PNG;
+  mask: Float32Array;
+  targetRgb: RgbColor;
+  premultiplied: boolean;
+  forceOpaqueOnStrongMask?: boolean;
+};
+
+type RecolorWhiteOptions = {
+  pngPath: string;
+  targetRgb: RgbColor;
+  threshold: number;
+  maxSaturation: number;
+  mode: string;
+  labDeltaEMax: number;
+  labSoftness: number;
+  minLightness: number;
+  featherPx: number;
+  minAlpha: number;
+  cleanupPasses?: number;
+  cleanupMinChannel?: number;
+  cleanupMaxSaturation?: number;
+  hardCleanupPasses?: number;
+  hardCleanupMinChannel?: number;
+  hardCleanupMinLightness?: number;
+  hardCleanupDeltaEMax?: number;
+  hardCleanupMaxSaturation?: number;
+  sanitizeTransparentRgb?: boolean;
+};
+
+type RecolorWhiteStats = {
+  replacedPixels: number;
+  filledHolePixels: number;
+  forcedOpaquePixels: number;
+  cleanupPassesUsed: number;
+  cleanupCandidatePixels: number;
+  cleanupReplacedPixels: number;
+  hardCleanupPassesUsed: number;
+  hardCleanupCandidatePixels: number;
+  hardCleanupReplacedPixels: number;
+  zeroedTransparentPixels: number;
+  mode: string;
+  premultiplied_input: boolean;
+};
+
+type ReplaceWhiteOptions = {
+  filePath: string;
+  offWhiteHex?: string;
+  threshold?: number;
+  maxSaturation?: number;
+  dpi?: number;
+  stripSoftMask?: boolean;
+  mode?: string;
+  labDeltaEMax?: number;
+  labSoftness?: number;
+  minLightness?: number;
+  featherPx?: number;
+  minAlpha?: number;
+  cleanupPasses?: number;
+  cleanupMinChannel?: number;
+  cleanupMaxSaturation?: number;
+  hardCleanupPasses?: number;
+  hardCleanupMinChannel?: number;
+  hardCleanupMinLightness?: number;
+  hardCleanupDeltaEMax?: number;
+  hardCleanupMaxSaturation?: number;
+  sanitizeTransparentRgb?: boolean;
+  allowSoftMaskFallback?: boolean;
+};
+
+type FontSet = {
+  primary: Font;
+  fallbacks: Font[];
+};
+
+type EmojiRuntime = {
+  mode: "font" | "apple_image";
+  baseUrl: string;
+  assetsDir: string;
+  bytesCache: Map<string, Buffer | null>;
+  missingWarned: Set<string>;
+};
+
+type LineSegmentRun = {
+  kind: "run";
+  font: Font;
+  glyphs: Glyph[];
+  positions: GlyphPosition[];
+  xPt: number;
+  scale: number;
+};
+
+type LineSegmentEmoji = {
+  kind: "emoji";
+  cluster: string;
+  xPt: number;
+  widthPt: number;
+  heightPt: number;
+};
+
+type LineSegment = LineSegmentRun | LineSegmentEmoji;
+
+type LineLayout = {
+  segments: LineSegment[];
+  minX: number;
+  width: number;
+};
+
+type LineMetrics = {
+  scale: number;
+  descent: number;
+  textHeight: number;
+  lineHeight: number;
+};
+
+type BboxType = { x: number; y: number; width: number; height: number };
+
+type LayoutMaterial = {
+  type: "poster" | "engraving" | "sticker";
+  code: string;
+  product_id: number | null;
+  source_url: string | null;
+  text: string | null;
+  format: "A5" | "A4" | null;
+  stand_type: "W" | "WW" | "MWW" | "C" | "K" | null;
+  index: number;
+  total: number;
+  filename: string;
+};
+
+type LayoutPlanInput = {
+  order_number: string;
+  urgent: boolean;
+  flags: string[];
+  notes: string[];
+  preview_images: string[];
+  qr: {
+    requested: boolean;
+    original_url: string | null;
+    short_url: string | null;
+    url: string | null;
+    valid: boolean;
+    should_generate: boolean;
+  };
+  materials: LayoutMaterial[];
+};
+
+type QrPlacement = {
+  anchor: "left-bottom" | "right-bottom";
+  xMm?: number;
+  yMm?: number;
+  rightMm?: number;
+  bottomMm?: number;
+  sizeMm: number;
+};
+
+export type PdfGeneratedFile = {
+  type: "poster" | "engraving" | "sticker";
+  filename: string;
+  path: string;
+  details: Record<string, unknown>;
+};
+
+export type PdfFailedFile = {
+  type: "poster" | "engraving" | "sticker";
+  filename: string;
+  path: string;
+  message: string;
+};
+
+export type PdfPipelineResult = {
+  output_dir: string;
+  color_space: "RGB" | "CMYK";
+  warnings: string[];
+  generated: PdfGeneratedFile[];
+  failed: PdfFailedFile[];
+};
+
+export type GenerateMaterialFilesInput = {
+  layoutPlan: LayoutPlanInput;
+  outputRoot: string;
+  orderId: string;
+  fontPath: string;
+  emojiFontPath?: string;
+  emojiRenderMode?: string;
+  appleEmojiBaseUrl?: string;
+  appleEmojiAssetsDir?: string;
+  stickerSizeMm?: number;
+  colorSpace?: string;
+  qrPlacementByFormat?: Record<string, { rightMm?: number; bottomMm?: number; sizeMm?: number; xMm?: number; yMm?: number }>;
+  sourceRequestOptions?: SourceRequestOptions;
+  replaceWhiteWithOffWhite?: boolean;
+  offWhiteHex?: string;
+  whiteThreshold?: number;
+  whiteMaxSaturation?: number;
+  rasterizeDpi?: number;
+  whiteReplaceMode?: string;
+  whiteLabDeltaEMax?: number;
+  whiteLabSoftness?: number;
+  whiteMinLightness?: number;
+  whiteFeatherPx?: number;
+  whiteMinAlpha?: number;
+  whiteCleanupPasses?: number;
+  whiteCleanupMinChannel?: number;
+  whiteCleanupMaxSaturation?: number;
+  whiteHardCleanupPasses?: number;
+  whiteHardCleanupMinChannel?: number;
+  whiteHardCleanupMinLightness?: number;
+  whiteHardCleanupDeltaEMax?: number;
+  whiteHardCleanupMaxSaturation?: number;
+  whiteSanitizeTransparentRgb?: boolean;
+  whiteAllowSoftMaskFallback?: boolean;
+  whiteReplaceIterations?: number;
+  whiteFinalEnforce?: boolean;
+  whiteFinalIterations?: number;
+  whiteFinalThreshold?: number;
+  whiteFinalMaxSaturation?: number;
+  whiteFinalDpi?: number;
+};
+
+export type EnforceOffWhiteInput = {
+  filePath: string;
+  offWhiteHex?: string;
+  rasterizeDpi?: number;
+};
+
+// ---------------------------------------------------------------------------
+// Ghostscript cache
+// ---------------------------------------------------------------------------
+
+let ghostscriptVersionPromise: Promise<string> | null = null;
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function sleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, delayMs);
   });
 }
 
-function normalizeSourceRequestOptions(sourceRequestOptions = {}) {
+function normalizeSourceRequestOptions(
+  sourceRequestOptions: SourceRequestOptions = {},
+): NormalizedSourceRequestOptions {
   const timeoutMs = Number.parseInt(
     String(sourceRequestOptions.timeoutMs ?? DEFAULT_SOURCE_REQUEST_TIMEOUT_MS),
     10,
@@ -63,15 +369,19 @@ function normalizeSourceRequestOptions(sourceRequestOptions = {}) {
   };
 }
 
-function computeBackoffDelayMs(attempt, baseDelayMs, maxDelayMs = 20_000) {
+function computeBackoffDelayMs(
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs = 20_000,
+): number {
   const safeAttempt = Math.max(1, Number.parseInt(String(attempt), 10) || 1);
   const cappedExp = Math.min(8, safeAttempt - 1);
-  const exponential = baseDelayMs * (2 ** cappedExp);
+  const exponential = baseDelayMs * 2 ** cappedExp;
   const jitter = Math.floor(Math.random() * Math.min(1_000, baseDelayMs));
   return Math.min(maxDelayMs, exponential + jitter);
 }
 
-function isRetryableStatusCode(statusCode) {
+function isRetryableStatusCode(statusCode: number): boolean {
   return (
     statusCode === 408 ||
     statusCode === 409 ||
@@ -81,7 +391,7 @@ function isRetryableStatusCode(statusCode) {
   );
 }
 
-function parseRetryAfterMs(value) {
+function parseRetryAfterMs(value: unknown): number | null {
   if (value === undefined || value === null || value === "") {
     return null;
   }
@@ -100,71 +410,70 @@ function parseRetryAfterMs(value) {
   return null;
 }
 
-function isRetryableFetchError(error) {
+function isRetryableFetchError(error: unknown): boolean {
   if (!error) {
     return false;
   }
 
-  if (error.name === "AbortError") {
+  if ((error as { name?: unknown }).name === "AbortError") {
     return true;
   }
 
-  const message = String(error.message ?? "").toLowerCase();
+  const message = String((error as { message?: unknown }).message ?? "").toLowerCase();
   return /fetch failed|network|timeout|socket|econnreset|etimedout|econnrefused|enotfound|eai_again/i.test(
     message,
   );
 }
 
-async function fetchWithTimeout(url, options, timeoutMs) {
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort();
   }, timeoutMs);
 
   try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
+    return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-function normalizeColorSpace(colorSpace) {
+function normalizeColorSpace(colorSpace: unknown): "CMYK" | "RGB" {
   return String(colorSpace ?? "RGB").trim().toUpperCase() === "CMYK" ? "CMYK" : "RGB";
 }
 
-function runCommand(command, args) {
+// ---------------------------------------------------------------------------
+// Shell / Ghostscript
+// ---------------------------------------------------------------------------
+
+function runCommand(
+  command: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
 
     let stdout = "";
     let stderr = "";
 
-    child.stdout.on("data", (chunk) => {
+    child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
     });
-
-    child.stderr.on("data", (chunk) => {
+    child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
     });
-
-    child.on("error", (error) => {
+    child.on("error", (error: Error) => {
       reject(new Error(`${command} failed to start: ${error.message}`));
     });
-
-    child.on("close", (code) => {
+    child.on("close", (code: number | null) => {
       if (code === 0) {
-        resolve({
-          stdout: stdout.trim(),
-          stderr: stderr.trim(),
-        });
+        resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
         return;
       }
-
       const output = `${stdout}\n${stderr}`.trim();
       reject(
         new Error(
@@ -175,11 +484,11 @@ function runCommand(command, args) {
   });
 }
 
-async function ensureGhostscriptAvailable() {
+async function ensureGhostscriptAvailable(): Promise<string> {
   if (!ghostscriptVersionPromise) {
     ghostscriptVersionPromise = runCommand("gs", ["--version"])
       .then((result) => result.stdout || "unknown")
-      .catch((error) => {
+      .catch((error: Error) => {
         throw new Error(
           `Ghostscript (gs) is required for CMYK conversion. Install it and retry. Root error: ${error.message}`,
         );
@@ -189,7 +498,7 @@ async function ensureGhostscriptAvailable() {
   return ghostscriptVersionPromise;
 }
 
-async function convertPdfToCmykInPlace(filePath) {
+async function convertPdfToCmykInPlace(filePath: string): Promise<void> {
   const tempFilePath = `${filePath}.cmyk.tmp.pdf`;
 
   try {
@@ -215,14 +524,37 @@ async function convertPdfToCmykInPlace(filePath) {
   }
 }
 
-function parseHexColor(hex) {
+async function rasterizePdfToPngs(options: {
+  filePath: string;
+  outputPattern: string;
+  dpi: number;
+}): Promise<void> {
+  await runCommand("gs", [
+    "-q",
+    "-dSAFER",
+    "-dBATCH",
+    "-dNOPAUSE",
+    "-sDEVICE=pngalpha",
+    "-dTextAlphaBits=4",
+    "-dGraphicsAlphaBits=4",
+    `-r${options.dpi}`,
+    `-sOutputFile=${options.outputPattern}`,
+    options.filePath,
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Color math
+// ---------------------------------------------------------------------------
+
+function parseHexColor(hex: unknown): RgbColor {
   const normalized = String(hex ?? "")
     .trim()
     .replace(/^#/, "")
     .toLowerCase();
 
   if (!/^[0-9a-f]{6}$/.test(normalized)) {
-    throw new Error(`Invalid hex color: ${hex}`);
+    throw new Error(`Invalid hex color: ${hex as string}`);
   }
 
   return {
@@ -233,65 +565,46 @@ function parseHexColor(hex) {
   };
 }
 
-async function rasterizePdfToPngs({ filePath, outputPattern, dpi }) {
-  await runCommand("gs", [
-    "-q",
-    "-dSAFER",
-    "-dBATCH",
-    "-dNOPAUSE",
-    "-sDEVICE=pngalpha",
-    "-dTextAlphaBits=4",
-    "-dGraphicsAlphaBits=4",
-    `-r${dpi}`,
-    `-sOutputFile=${outputPattern}`,
-    filePath,
-  ]);
-}
-
-function isNearWhitePixel({ red, green, blue, threshold, maxSaturation }) {
+function isNearWhitePixel(options: {
+  red: number;
+  green: number;
+  blue: number;
+  threshold: number;
+  maxSaturation: number;
+}): boolean {
+  const { red, green, blue, threshold, maxSaturation } = options;
   const maxChannel = Math.max(red, green, blue);
   const minChannel = Math.min(red, green, blue);
-  if (minChannel < threshold) {
-    return false;
-  }
-
-  if (maxChannel === 0) {
-    return false;
-  }
-
+  if (minChannel < threshold) return false;
+  if (maxChannel === 0) return false;
   const saturation = (maxChannel - minChannel) / maxChannel;
   return saturation <= maxSaturation;
 }
 
-function restoreUnpremultipliedChannel(value, alpha) {
-  if (alpha <= 0 || alpha >= 255) {
-    return value;
-  }
+function restoreUnpremultipliedChannel(value: number, alpha: number): number {
+  if (alpha <= 0 || alpha >= 255) return value;
   return Math.min(255, Math.round((value * 255) / alpha));
 }
 
-function clamp(value, min, max) {
+function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function smoothstep(edge0, edge1, value) {
+function smoothstep(edge0: number, edge1: number, value: number): number {
   if (edge0 === edge1) {
     return value < edge0 ? 0 : 1;
   }
-
   const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);
 }
 
-function srgbToLinear(channel) {
+function srgbToLinear(channel: number): number {
   const value = clamp(channel / 255, 0, 1);
-  if (value <= 0.04045) {
-    return value / 12.92;
-  }
+  if (value <= 0.04045) return value / 12.92;
   return ((value + 0.055) / 1.055) ** 2.4;
 }
 
-function rgbToLab(red, green, blue) {
+function rgbToLab(red: number, green: number, blue: number): { l: number; a: number; b: number } {
   const r = srgbToLinear(red);
   const g = srgbToLinear(green);
   const b = srgbToLinear(blue);
@@ -310,23 +623,21 @@ function rgbToLab(red, green, blue) {
   const fy = y / yN > epsilon ? (y / yN) ** (1 / 3) : (kappa * (y / yN) + 16) / 116;
   const fz = z / zN > epsilon ? (z / zN) ** (1 / 3) : (kappa * (z / zN) + 16) / 116;
 
-  return {
-    l: 116 * fy - 16,
-    a: 500 * (fx - fy),
-    b: 200 * (fy - fz),
-  };
+  return { l: 116 * fy - 16, a: 500 * (fx - fy), b: 200 * (fy - fz) };
 }
 
-function deltaEToPaperWhite(lab) {
+function deltaEToPaperWhite(lab: { l: number; a: number; b: number }): number {
   const dL = 100 - lab.l;
   return Math.sqrt(dL * dL + lab.a * lab.a + lab.b * lab.b);
 }
 
-function detectPremultipliedAlpha(png) {
+// ---------------------------------------------------------------------------
+// PNG pixel helpers
+// ---------------------------------------------------------------------------
+
+function detectPremultipliedAlpha(png: PNG): boolean {
   const pixelsCount = png.width * png.height;
-  if (pixelsCount <= 0) {
-    return false;
-  }
+  if (pixelsCount <= 0) return false;
 
   const maxSamples = 25_000;
   const step = Math.max(1, Math.floor(pixelsCount / maxSamples));
@@ -335,15 +646,13 @@ function detectPremultipliedAlpha(png) {
 
   for (let pixelIndex = 0; pixelIndex < pixelsCount; pixelIndex += step) {
     const dataIndex = pixelIndex * 4;
-    const alpha = png.data[dataIndex + 3];
-    if (alpha <= 0 || alpha >= 255) {
-      continue;
-    }
+    const alpha = png.data[dataIndex + 3]!;
+    if (alpha <= 0 || alpha >= 255) continue;
 
     const maxChannel = Math.max(
-      png.data[dataIndex],
-      png.data[dataIndex + 1],
-      png.data[dataIndex + 2],
+      png.data[dataIndex]!,
+      png.data[dataIndex + 1]!,
+      png.data[dataIndex + 2]!,
     );
     if (maxChannel <= alpha + 2) {
       likelyPremultiplied += 1;
@@ -351,89 +660,38 @@ function detectPremultipliedAlpha(png) {
     semiTransparent += 1;
   }
 
-  if (semiTransparent < 50) {
-    return false;
-  }
-
+  if (semiTransparent < 50) return false;
   return likelyPremultiplied / semiTransparent >= 0.9;
 }
 
-function boxBlurHorizontal(source, target, width, height, radius) {
-  const kernelSize = radius * 2 + 1;
-
-  for (let y = 0; y < height; y += 1) {
-    const rowOffset = y * width;
-    let sum = 0;
-
-    for (let x = -radius; x <= radius; x += 1) {
-      const sampleX = clamp(x, 0, width - 1);
-      sum += source[rowOffset + sampleX];
-    }
-
-    for (let x = 0; x < width; x += 1) {
-      target[rowOffset + x] = sum / kernelSize;
-      const removeX = clamp(x - radius, 0, width - 1);
-      const addX = clamp(x + radius + 1, 0, width - 1);
-      sum += source[rowOffset + addX] - source[rowOffset + removeX];
-    }
-  }
-}
-
-function boxBlurVertical(source, target, width, height, radius) {
-  const kernelSize = radius * 2 + 1;
-
-  for (let x = 0; x < width; x += 1) {
-    let sum = 0;
-
-    for (let y = -radius; y <= radius; y += 1) {
-      const sampleY = clamp(y, 0, height - 1);
-      sum += source[sampleY * width + x];
-    }
-
-    for (let y = 0; y < height; y += 1) {
-      target[y * width + x] = sum / kernelSize;
-      const removeY = clamp(y - radius, 0, height - 1);
-      const addY = clamp(y + radius + 1, 0, height - 1);
-      sum += source[addY * width + x] - source[removeY * width + x];
-    }
-  }
-}
-
-function blurMaskInPlace(mask, width, height, radius) {
-  if (radius <= 0) {
-    return;
-  }
-
-  const temp = new Float32Array(mask.length);
-  boxBlurHorizontal(mask, temp, width, height, radius);
-  boxBlurVertical(temp, mask, width, height, radius);
-}
-
-function readWorkingRgb(data, dataIndex, alpha, premultiplied) {
-  if (alpha <= 0) {
-    return {
-      red: 0,
-      green: 0,
-      blue: 0,
-    };
-  }
+function readWorkingRgb(
+  data: Buffer,
+  dataIndex: number,
+  alpha: number,
+  premultiplied: boolean,
+): { red: number; green: number; blue: number } {
+  if (alpha <= 0) return { red: 0, green: 0, blue: 0 };
 
   if (!premultiplied || alpha >= 255) {
-    return {
-      red: data[dataIndex],
-      green: data[dataIndex + 1],
-      blue: data[dataIndex + 2],
-    };
+    return { red: data[dataIndex]!, green: data[dataIndex + 1]!, blue: data[dataIndex + 2]! };
   }
 
   return {
-    red: restoreUnpremultipliedChannel(data[dataIndex], alpha),
-    green: restoreUnpremultipliedChannel(data[dataIndex + 1], alpha),
-    blue: restoreUnpremultipliedChannel(data[dataIndex + 2], alpha),
+    red: restoreUnpremultipliedChannel(data[dataIndex]!, alpha),
+    green: restoreUnpremultipliedChannel(data[dataIndex + 1]!, alpha),
+    blue: restoreUnpremultipliedChannel(data[dataIndex + 2]!, alpha),
   };
 }
 
-function writeWorkingRgb(data, dataIndex, alpha, premultiplied, red, green, blue) {
+function writeWorkingRgb(
+  data: Buffer,
+  dataIndex: number,
+  alpha: number,
+  premultiplied: boolean,
+  red: number,
+  green: number,
+  blue: number,
+): void {
   const clampedRed = clamp(Math.round(red), 0, 255);
   const clampedGreen = clamp(Math.round(green), 0, 255);
   const clampedBlue = clamp(Math.round(blue), 0, 255);
@@ -450,15 +708,13 @@ function writeWorkingRgb(data, dataIndex, alpha, premultiplied, red, green, blue
   data[dataIndex + 2] = Math.round((clampedBlue * alpha) / 255);
 }
 
-function sanitizeTransparentRgbInPlace(png) {
+function sanitizeTransparentRgbInPlace(png: PNG): number {
   const pixelsCount = png.width * png.height;
   let zeroedPixels = 0;
 
   for (let pixelIndex = 0; pixelIndex < pixelsCount; pixelIndex += 1) {
     const dataIndex = pixelIndex * 4;
-    if (png.data[dataIndex + 3] !== 0) {
-      continue;
-    }
+    if (png.data[dataIndex + 3] !== 0) continue;
 
     if (
       png.data[dataIndex] === 0 &&
@@ -477,33 +733,22 @@ function sanitizeTransparentRgbInPlace(png) {
   return zeroedPixels;
 }
 
-function buildThresholdWhiteMask({
-  png,
-  threshold,
-  maxSaturation,
-  minAlpha,
-  premultiplied,
-}) {
+// ---------------------------------------------------------------------------
+// White mask builders
+// ---------------------------------------------------------------------------
+
+function buildThresholdWhiteMask(options: WhiteMaskOptions): Float32Array {
+  const { png, threshold, maxSaturation, minAlpha, premultiplied } = options;
   const pixelsCount = png.width * png.height;
   const mask = new Float32Array(pixelsCount);
 
   for (let pixelIndex = 0; pixelIndex < pixelsCount; pixelIndex += 1) {
     const dataIndex = pixelIndex * 4;
-    const alpha = png.data[dataIndex + 3];
-    if (alpha <= minAlpha) {
-      continue;
-    }
+    const alpha = png.data[dataIndex + 3]!;
+    if (alpha <= minAlpha) continue;
 
     const rgbPixel = readWorkingRgb(png.data, dataIndex, alpha, premultiplied);
-    if (
-      isNearWhitePixel({
-        red: rgbPixel.red,
-        green: rgbPixel.green,
-        blue: rgbPixel.blue,
-        threshold,
-        maxSaturation,
-      })
-    ) {
+    if (isNearWhitePixel({ ...rgbPixel, threshold, maxSaturation })) {
       mask[pixelIndex] = 1;
     }
   }
@@ -511,16 +756,17 @@ function buildThresholdWhiteMask({
   return mask;
 }
 
-function buildPhotoshopLikeWhiteMask({
-  png,
-  threshold,
-  maxSaturation,
-  minAlpha,
-  labDeltaEMax,
-  labSoftness,
-  minLightness,
-  premultiplied,
-}) {
+function buildPhotoshopLikeWhiteMask(options: PhotoshopLikeMaskOptions): Float32Array {
+  const {
+    png,
+    threshold,
+    maxSaturation,
+    minAlpha,
+    labDeltaEMax,
+    labSoftness,
+    minLightness,
+    premultiplied,
+  } = options;
   const pixelsCount = png.width * png.height;
   const mask = new Float32Array(pixelsCount);
   const brightnessGate = Math.max(0, threshold);
@@ -532,25 +778,17 @@ function buildPhotoshopLikeWhiteMask({
 
   for (let pixelIndex = 0; pixelIndex < pixelsCount; pixelIndex += 1) {
     const dataIndex = pixelIndex * 4;
-    const alpha = png.data[dataIndex + 3];
-    if (alpha <= minAlpha) {
-      continue;
-    }
+    const alpha = png.data[dataIndex + 3]!;
+    if (alpha <= minAlpha) continue;
 
     const rgbPixel = readWorkingRgb(png.data, dataIndex, alpha, premultiplied);
-    const red = rgbPixel.red;
-    const green = rgbPixel.green;
-    const blue = rgbPixel.blue;
+    const { red, green, blue } = rgbPixel;
     const maxChannel = Math.max(red, green, blue);
-    if (maxChannel < brightnessGate) {
-      continue;
-    }
+    if (maxChannel < brightnessGate) continue;
 
     const minChannel = Math.min(red, green, blue);
     const saturation = maxChannel === 0 ? 0 : (maxChannel - minChannel) / maxChannel;
-    if (saturation > maxSaturation + saturationSoftness) {
-      continue;
-    }
+    if (saturation > maxSaturation + saturationSoftness) continue;
 
     const lab = rgbToLab(red, green, blue);
     const deltaE = deltaEToPaperWhite(lab);
@@ -560,47 +798,44 @@ function buildPhotoshopLikeWhiteMask({
       1 - smoothstep(maxSaturation, maxSaturation + saturationSoftness, saturation);
     const maskWeight = deltaWeight * lightWeight * saturationWeight;
 
-    if (maskWeight <= 0) {
-      continue;
-    }
-
+    if (maskWeight <= 0) continue;
     mask[pixelIndex] = clamp(maskWeight, 0, 1);
   }
 
   return mask;
 }
 
-function buildResidualWhiteCleanupMask({
-  png,
-  minAlpha,
-  premultiplied,
-  strictMinChannel = 248,
-  strictMaxSaturation = 0.35,
-}) {
+function buildResidualWhiteCleanupMask(options: ResidualCleanupMaskOptions): {
+  mask: Float32Array;
+  candidatePixels: number;
+} {
+  const {
+    png,
+    minAlpha,
+    premultiplied,
+    strictMinChannel = 248,
+    strictMaxSaturation = 0.35,
+  } = options;
   const pixelsCount = png.width * png.height;
   const mask = new Float32Array(pixelsCount);
   let candidatePixels = 0;
 
   for (let pixelIndex = 0; pixelIndex < pixelsCount; pixelIndex += 1) {
     const dataIndex = pixelIndex * 4;
-    const alpha = png.data[dataIndex + 3];
-    if (alpha <= minAlpha) {
-      continue;
-    }
+    const alpha = png.data[dataIndex + 3]!;
+    if (alpha <= minAlpha) continue;
 
     const rgbPixel = readWorkingRgb(png.data, dataIndex, alpha, premultiplied);
     const maxChannel = Math.max(rgbPixel.red, rgbPixel.green, rgbPixel.blue);
     const minChannel = Math.min(rgbPixel.red, rgbPixel.green, rgbPixel.blue);
     const saturation = maxChannel === 0 ? 0 : (maxChannel - minChannel) / maxChannel;
 
-    // 1) Aggressive catch for leftover near-pure whites.
     if (minChannel >= strictMinChannel && saturation <= strictMaxSaturation) {
       mask[pixelIndex] = 1;
       candidatePixels += 1;
       continue;
     }
 
-    // 2) Tight Lab fallback for very bright neutral tones close to paper white.
     if (minChannel >= strictMinChannel - 6 && saturation <= 0.12) {
       const lab = rgbToLab(rgbPixel.red, rgbPixel.green, rgbPixel.blue);
       const deltaE = deltaEToPaperWhite(lab);
@@ -611,48 +846,43 @@ function buildResidualWhiteCleanupMask({
     }
   }
 
-  return {
-    mask,
-    candidatePixels,
-  };
+  return { mask, candidatePixels };
 }
 
-function buildHardWhiteCleanupMask({
-  png,
-  minAlpha,
-  premultiplied,
-  hardMinChannel = 246,
-  hardMinLightness = 98.5,
-  hardDeltaEMax = 14,
-  hardMaxSaturation = 0.6,
-}) {
+function buildHardWhiteCleanupMask(options: HardCleanupMaskOptions): {
+  mask: Float32Array;
+  candidatePixels: number;
+} {
+  const {
+    png,
+    minAlpha,
+    premultiplied,
+    hardMinChannel = 246,
+    hardMinLightness = 98.5,
+    hardDeltaEMax = 14,
+    hardMaxSaturation = 0.6,
+  } = options;
   const pixelsCount = png.width * png.height;
   const mask = new Float32Array(pixelsCount);
   let candidatePixels = 0;
 
   for (let pixelIndex = 0; pixelIndex < pixelsCount; pixelIndex += 1) {
     const dataIndex = pixelIndex * 4;
-    const alpha = png.data[dataIndex + 3];
-    if (alpha <= minAlpha) {
-      continue;
-    }
+    const alpha = png.data[dataIndex + 3]!;
+    if (alpha <= minAlpha) continue;
 
     const rgbPixel = readWorkingRgb(png.data, dataIndex, alpha, premultiplied);
     const maxChannel = Math.max(rgbPixel.red, rgbPixel.green, rgbPixel.blue);
     const minChannel = Math.min(rgbPixel.red, rgbPixel.green, rgbPixel.blue);
     const saturation = maxChannel === 0 ? 0 : (maxChannel - minChannel) / maxChannel;
 
-    // Hard neutral near-white gate: very aggressive for tiny leftovers.
     if (minChannel >= hardMinChannel) {
       mask[pixelIndex] = 1;
       candidatePixels += 1;
       continue;
     }
 
-    // Lab fallback for bright near-white tones that miss channel gate by a few values.
-    if (maxChannel < hardMinChannel + 4 || saturation > hardMaxSaturation) {
-      continue;
-    }
+    if (maxChannel < hardMinChannel + 4 || saturation > hardMaxSaturation) continue;
 
     const lab = rgbToLab(rgbPixel.red, rgbPixel.green, rgbPixel.blue);
     const deltaE = deltaEToPaperWhite(lab);
@@ -662,13 +892,11 @@ function buildHardWhiteCleanupMask({
     }
   }
 
-  return {
-    mask,
-    candidatePixels,
-  };
+  return { mask, candidatePixels };
 }
 
-function fillMaskPinholes({ png, mask, minNeighborMask = 0.86, maxAlpha = 40, minNeighbors = 6 }) {
+function fillMaskPinholes(options: FillPinholeOptions): number {
+  const { png, mask, minNeighborMask = 0.86, maxAlpha = 40, minNeighbors = 6 } = options;
   const width = png.width;
   const height = png.height;
   const marks = new Uint8Array(mask.length);
@@ -677,23 +905,17 @@ function fillMaskPinholes({ png, mask, minNeighborMask = 0.86, maxAlpha = 40, mi
   for (let y = 1; y < height - 1; y += 1) {
     for (let x = 1; x < width - 1; x += 1) {
       const pixelIndex = y * width + x;
-      if (mask[pixelIndex] >= minNeighborMask) {
-        continue;
-      }
+      if (mask[pixelIndex]! >= minNeighborMask) continue;
 
-      const alpha = png.data[pixelIndex * 4 + 3];
-      if (alpha > maxAlpha) {
-        continue;
-      }
+      const alpha = png.data[pixelIndex * 4 + 3]!;
+      if (alpha > maxAlpha) continue;
 
       let neighbors = 0;
       for (let ny = -1; ny <= 1; ny += 1) {
         for (let nx = -1; nx <= 1; nx += 1) {
-          if (nx === 0 && ny === 0) {
-            continue;
-          }
+          if (nx === 0 && ny === 0) continue;
           const neighborIndex = (y + ny) * width + (x + nx);
-          if (mask[neighborIndex] >= minNeighborMask) {
+          if (mask[neighborIndex]! >= minNeighborMask) {
             neighbors += 1;
           }
         }
@@ -706,9 +928,7 @@ function fillMaskPinholes({ png, mask, minNeighborMask = 0.86, maxAlpha = 40, mi
   }
 
   for (let pixelIndex = 0; pixelIndex < marks.length; pixelIndex += 1) {
-    if (!marks[pixelIndex]) {
-      continue;
-    }
+    if (!marks[pixelIndex]) continue;
     mask[pixelIndex] = 1;
     filled += 1;
   }
@@ -716,28 +936,22 @@ function fillMaskPinholes({ png, mask, minNeighborMask = 0.86, maxAlpha = 40, mi
   return filled;
 }
 
-function applyWhiteMaskToPng({
-  png,
-  mask,
-  targetRgb,
-  premultiplied,
-  forceOpaqueOnStrongMask = false,
-}) {
+function applyWhiteMaskToPng(options: ApplyMaskOptions): {
+  recoloredPixels: number;
+  forcedOpaquePixels: number;
+} {
+  const { png, mask, targetRgb, premultiplied, forceOpaqueOnStrongMask = false } = options;
   const pixelsCount = png.width * png.height;
   let recoloredPixels = 0;
   let forcedOpaquePixels = 0;
 
   for (let pixelIndex = 0; pixelIndex < pixelsCount; pixelIndex += 1) {
-    const weight = mask[pixelIndex];
-    if (weight <= 0) {
-      continue;
-    }
+    const weight = mask[pixelIndex]!;
+    if (weight <= 0) continue;
 
     const dataIndex = pixelIndex * 4;
-    const alpha = png.data[dataIndex + 3];
-    if (alpha === 0) {
-      continue;
-    }
+    const alpha = png.data[dataIndex + 3]!;
+    if (alpha === 0) continue;
 
     const rgbPixel = readWorkingRgb(png.data, dataIndex, alpha, premultiplied);
     const nextRed = rgbPixel.red + (targetRgb.r - rgbPixel.red) * weight;
@@ -748,48 +962,43 @@ function applyWhiteMaskToPng({
 
     if (forceOpaqueOnStrongMask && weight >= 0.92 && alpha <= 40) {
       png.data[dataIndex + 3] = 255;
-      writeWorkingRgb(
-        png.data,
-        dataIndex,
-        255,
-        premultiplied,
-        targetRgb.r,
-        targetRgb.g,
-        targetRgb.b,
-      );
+      writeWorkingRgb(png.data, dataIndex, 255, premultiplied, targetRgb.r, targetRgb.g, targetRgb.b);
       forcedOpaquePixels += 1;
     }
 
     recoloredPixels += 1;
   }
 
-  return {
-    recoloredPixels,
-    forcedOpaquePixels,
-  };
+  return { recoloredPixels, forcedOpaquePixels };
 }
 
-function recolorWhitePngInPlace({
-  pngPath,
-  targetRgb,
-  threshold,
-  maxSaturation,
-  mode,
-  labDeltaEMax,
-  labSoftness,
-  minLightness,
-  featherPx,
-  minAlpha,
-  cleanupPasses = 1,
-  cleanupMinChannel = 248,
-  cleanupMaxSaturation = 0.35,
-  hardCleanupPasses = 0,
-  hardCleanupMinChannel = 246,
-  hardCleanupMinLightness = 98.5,
-  hardCleanupDeltaEMax = 14,
-  hardCleanupMaxSaturation = 0.6,
-  sanitizeTransparentRgb = true,
-}) {
+// ---------------------------------------------------------------------------
+// PNG recolor (in-place, synchronous)
+// ---------------------------------------------------------------------------
+
+function recolorWhitePngInPlace(options: RecolorWhiteOptions): RecolorWhiteStats {
+  const {
+    pngPath,
+    targetRgb,
+    threshold,
+    maxSaturation,
+    mode,
+    labDeltaEMax,
+    labSoftness,
+    minLightness,
+    featherPx,
+    minAlpha,
+    cleanupPasses = 1,
+    cleanupMinChannel = 248,
+    cleanupMaxSaturation = 0.35,
+    hardCleanupPasses = 0,
+    hardCleanupMinChannel = 246,
+    hardCleanupMinLightness = 98.5,
+    hardCleanupDeltaEMax = 14,
+    hardCleanupMaxSaturation = 0.6,
+    sanitizeTransparentRgb = true,
+  } = options;
+
   const pngBuffer = fs.readFileSync(pngPath);
   const png = PNG.sync.read(pngBuffer);
   const premultiplied = detectPremultipliedAlpha(png);
@@ -824,7 +1033,7 @@ function recolorWhitePngInPlace({
     : 0.6;
   const safeSanitizeTransparentRgb = Boolean(sanitizeTransparentRgb);
 
-  let selectedMask;
+  let selectedMask: Float32Array;
   if (safeMode === "photoshop_like") {
     selectedMask = buildPhotoshopLikeWhiteMask({
       png,
@@ -846,10 +1055,7 @@ function recolorWhitePngInPlace({
     });
   }
 
-  let filledHolePixels = fillMaskPinholes({
-    png,
-    mask: selectedMask,
-  });
+  let filledHolePixels = fillMaskPinholes({ png, mask: selectedMask });
 
   if (safeMode === "photoshop_like" && safeFeatherPx > 0.34) {
     const blurRadius = Math.max(1, Math.round(safeFeatherPx));
@@ -883,9 +1089,7 @@ function recolorWhitePngInPlace({
       strictMinChannel: safeCleanupMinChannel,
       strictMaxSaturation: safeCleanupMaxSaturation,
     });
-    if (cleanup.candidatePixels <= 0) {
-      break;
-    }
+    if (cleanup.candidatePixels <= 0) break;
 
     const cleanupStats = applyWhiteMaskToPng({
       png,
@@ -899,9 +1103,7 @@ function recolorWhitePngInPlace({
     cleanupReplacedPixels += cleanupStats.recoloredPixels;
     cleanupPassesUsed += 1;
 
-    if (cleanupStats.recoloredPixels <= 0) {
-      break;
-    }
+    if (cleanupStats.recoloredPixels <= 0) break;
   }
 
   let hardCleanupReplacedPixels = 0;
@@ -918,9 +1120,7 @@ function recolorWhitePngInPlace({
       hardDeltaEMax: safeHardCleanupDeltaEMax,
       hardMaxSaturation: safeHardCleanupMaxSaturation,
     });
-    if (hardCleanup.candidatePixels <= 0) {
-      break;
-    }
+    if (hardCleanup.candidatePixels <= 0) break;
 
     const hardCleanupStats = applyWhiteMaskToPng({
       png,
@@ -934,9 +1134,7 @@ function recolorWhitePngInPlace({
     hardCleanupReplacedPixels += hardCleanupStats.recoloredPixels;
     hardCleanupPassesUsed += 1;
 
-    if (hardCleanupStats.recoloredPixels <= 0) {
-      break;
-    }
+    if (hardCleanupStats.recoloredPixels <= 0) break;
   }
 
   const zeroedTransparentPixels = safeSanitizeTransparentRgb
@@ -961,40 +1159,113 @@ function recolorWhitePngInPlace({
   };
 }
 
-async function rebuildPdfFromPngs({ sourcePdfPath, pngPaths, outputPdfPath }) {
-  const sourceBytes = await fsp.readFile(sourcePdfPath);
+// ---------------------------------------------------------------------------
+// Box blur (for feathering mask)
+// ---------------------------------------------------------------------------
+
+function boxBlurHorizontal(
+  source: Float32Array,
+  target: Float32Array,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  const kernelSize = radius * 2 + 1;
+
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
+    let sum = 0;
+
+    for (let x = -radius; x <= radius; x += 1) {
+      const sampleX = clamp(x, 0, width - 1);
+      sum += source[rowOffset + sampleX]!;
+    }
+
+    for (let x = 0; x < width; x += 1) {
+      target[rowOffset + x] = sum / kernelSize;
+      const removeX = clamp(x - radius, 0, width - 1);
+      const addX = clamp(x + radius + 1, 0, width - 1);
+      sum += source[rowOffset + addX]! - source[rowOffset + removeX]!;
+    }
+  }
+}
+
+function boxBlurVertical(
+  source: Float32Array,
+  target: Float32Array,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  const kernelSize = radius * 2 + 1;
+
+  for (let x = 0; x < width; x += 1) {
+    let sum = 0;
+
+    for (let y = -radius; y <= radius; y += 1) {
+      const sampleY = clamp(y, 0, height - 1);
+      sum += source[sampleY * width + x]!;
+    }
+
+    for (let y = 0; y < height; y += 1) {
+      target[y * width + x] = sum / kernelSize;
+      const removeY = clamp(y - radius, 0, height - 1);
+      const addY = clamp(y + radius + 1, 0, height - 1);
+      sum += source[addY * width + x]! - source[removeY * width + x]!;
+    }
+  }
+}
+
+function blurMaskInPlace(
+  mask: Float32Array,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  if (radius <= 0) return;
+
+  const temp = new Float32Array(mask.length);
+  boxBlurHorizontal(mask, temp, width, height, radius);
+  boxBlurVertical(temp, mask, width, height, radius);
+}
+
+// ---------------------------------------------------------------------------
+// PDF rebuild helpers
+// ---------------------------------------------------------------------------
+
+async function rebuildPdfFromPngs(options: {
+  sourcePdfPath: string;
+  pngPaths: string[];
+  outputPdfPath: string;
+}): Promise<void> {
+  const sourceBytes = await fsp.readFile(options.sourcePdfPath);
   const sourceDoc = await PDFDocument.load(sourceBytes);
   const sourcePages = sourceDoc.getPages();
 
-  if (sourcePages.length !== pngPaths.length) {
+  if (sourcePages.length !== options.pngPaths.length) {
     throw new Error(
-      `Rasterization page count mismatch: source=${sourcePages.length}, png=${pngPaths.length}`,
+      `Rasterization page count mismatch: source=${sourcePages.length}, png=${options.pngPaths.length}`,
     );
   }
 
   const outDoc = await PDFDocument.create();
 
-  for (let index = 0; index < pngPaths.length; index += 1) {
-    const page = sourcePages[index];
+  for (let index = 0; index < options.pngPaths.length; index += 1) {
+    const page = sourcePages[index]!;
     const width = page.getWidth();
     const height = page.getHeight();
     const outPage = outDoc.addPage([width, height]);
-    const pngBytes = await fsp.readFile(pngPaths[index]);
+    const pngBytes = await fsp.readFile(options.pngPaths[index]!);
     const pngImage = await outDoc.embedPng(pngBytes);
 
-    outPage.drawImage(pngImage, {
-      x: 0,
-      y: 0,
-      width,
-      height,
-    });
+    outPage.drawImage(pngImage, { x: 0, y: 0, width, height });
   }
 
   const outBytes = await outDoc.save();
-  await fsp.writeFile(outputPdfPath, outBytes);
+  await fsp.writeFile(options.outputPdfPath, outBytes);
 }
 
-function findNonTransparentBoundingBox(png) {
+function findNonTransparentBoundingBox(png: PNG): BboxType | null {
   const width = png.width;
   const height = png.height;
   let minX = width;
@@ -1004,10 +1275,8 @@ function findNonTransparentBoundingBox(png) {
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const alpha = png.data[(y * width + x) * 4 + 3];
-      if (alpha === 0) {
-        continue;
-      }
+      const alpha = png.data[(y * width + x) * 4 + 3]!;
+      if (alpha === 0) continue;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -1015,29 +1284,23 @@ function findNonTransparentBoundingBox(png) {
     }
   }
 
-  if (maxX < minX || maxY < minY) {
-    return null;
-  }
-
-  return {
-    x: minX,
-    y: minY,
-    width: maxX - minX + 1,
-    height: maxY - minY + 1,
-  };
+  if (maxX < minX || maxY < minY) return null;
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
 
-function buildOpaqueCropPngBuffer({ sourcePng, bbox, premultiplied }) {
-  const out = new PNG({
-    width: bbox.width,
-    height: bbox.height,
-  });
+function buildOpaqueCropPngBuffer(options: {
+  sourcePng: PNG;
+  bbox: BboxType;
+  premultiplied: boolean;
+}): Buffer {
+  const { sourcePng, bbox, premultiplied } = options;
+  const out = new PNG({ width: bbox.width, height: bbox.height });
 
   for (let y = 0; y < bbox.height; y += 1) {
     for (let x = 0; x < bbox.width; x += 1) {
       const sourceIndex = ((bbox.y + y) * sourcePng.width + (bbox.x + x)) * 4;
       const outIndex = (y * bbox.width + x) * 4;
-      const alpha = sourcePng.data[sourceIndex + 3];
+      const alpha = sourcePng.data[sourceIndex + 3]!;
 
       if (alpha > 0) {
         const rgbPixel = readWorkingRgb(sourcePng.data, sourceIndex, alpha, premultiplied);
@@ -1057,20 +1320,17 @@ function buildOpaqueCropPngBuffer({ sourcePng, bbox, premultiplied }) {
   return PNG.sync.write(out);
 }
 
-function hasSignificantInternalTransparency({ png, bbox }) {
+function hasSignificantInternalTransparency(options: { png: PNG; bbox: BboxType }): boolean {
+  const { png, bbox } = options;
   const totalPixels = bbox.width * bbox.height;
-  if (totalPixels <= 0) {
-    return false;
-  }
+  if (totalPixels <= 0) return false;
 
   let transparentPixels = 0;
 
   for (let y = bbox.y; y < bbox.y + bbox.height; y += 1) {
     for (let x = bbox.x; x < bbox.x + bbox.width; x += 1) {
-      const alpha = png.data[(y * png.width + x) * 4 + 3];
-      if (alpha === 0) {
-        transparentPixels += 1;
-      }
+      const alpha = png.data[(y * png.width + x) * 4 + 3]!;
+      if (alpha === 0) transparentPixels += 1;
     }
   }
 
@@ -1078,12 +1338,13 @@ function hasSignificantInternalTransparency({ png, bbox }) {
   return transparentPixels > 1200 && ratio > 0.01;
 }
 
-async function rebuildPdfFromPngsWithoutSoftMask({
-  sourcePdfPath,
-  pngPaths,
-  outputPdfPath,
-  allowSoftMaskFallback = false,
-}) {
+async function rebuildPdfFromPngsWithoutSoftMask(options: {
+  sourcePdfPath: string;
+  pngPaths: string[];
+  outputPdfPath: string;
+  allowSoftMaskFallback?: boolean;
+}): Promise<{ opaqueCropPages: number; softMaskFallbackPages: number }> {
+  const { sourcePdfPath, pngPaths, outputPdfPath, allowSoftMaskFallback = false } = options;
   const sourceBytes = await fsp.readFile(sourcePdfPath);
   const sourceDoc = await PDFDocument.load(sourceBytes);
   const sourcePages = sourceDoc.getPages();
@@ -1099,38 +1360,25 @@ async function rebuildPdfFromPngsWithoutSoftMask({
   let softMaskFallbackPages = 0;
 
   for (let index = 0; index < pngPaths.length; index += 1) {
-    const sourcePage = sourcePages[index];
+    const sourcePage = sourcePages[index]!;
     const pageWidthPt = sourcePage.getWidth();
     const pageHeightPt = sourcePage.getHeight();
     const outPage = outDoc.addPage([pageWidthPt, pageHeightPt]);
 
-    const pagePngBuffer = await fsp.readFile(pngPaths[index]);
+    const pagePngBuffer = await fsp.readFile(pngPaths[index]!);
     const pagePng = PNG.sync.read(pagePngBuffer);
     const premultiplied = detectPremultipliedAlpha(pagePng);
     const bbox = findNonTransparentBoundingBox(pagePng);
-    if (!bbox) {
-      continue;
-    }
+    if (!bbox) continue;
 
-    // Keep alpha on pages with large transparent islands inside content bounds.
-    // This avoids accidental background fill artifacts when a design has separate objects.
     if (allowSoftMaskFallback && hasSignificantInternalTransparency({ png: pagePng, bbox })) {
       const fullPageImage = await outDoc.embedPng(pagePngBuffer);
-      outPage.drawImage(fullPageImage, {
-        x: 0,
-        y: 0,
-        width: pageWidthPt,
-        height: pageHeightPt,
-      });
+      outPage.drawImage(fullPageImage, { x: 0, y: 0, width: pageWidthPt, height: pageHeightPt });
       softMaskFallbackPages += 1;
       continue;
     }
 
-    const opaqueCropBytes = buildOpaqueCropPngBuffer({
-      sourcePng: pagePng,
-      bbox,
-      premultiplied,
-    });
+    const opaqueCropBytes = buildOpaqueCropPngBuffer({ sourcePng: pagePng, bbox, premultiplied });
     const cropImage = await outDoc.embedPng(opaqueCropBytes);
 
     const xPt = (bbox.x / pagePng.width) * pageWidthPt;
@@ -1138,48 +1386,48 @@ async function rebuildPdfFromPngsWithoutSoftMask({
     const heightPt = (bbox.height / pagePng.height) * pageHeightPt;
     const yPt = ((pagePng.height - (bbox.y + bbox.height)) / pagePng.height) * pageHeightPt;
 
-    outPage.drawImage(cropImage, {
-      x: xPt,
-      y: yPt,
-      width: widthPt,
-      height: heightPt,
-    });
+    outPage.drawImage(cropImage, { x: xPt, y: yPt, width: widthPt, height: heightPt });
     opaqueCropPages += 1;
   }
 
   const outBytes = await outDoc.save();
   await fsp.writeFile(outputPdfPath, outBytes);
 
-  return {
-    opaqueCropPages,
-    softMaskFallbackPages,
-  };
+  return { opaqueCropPages, softMaskFallbackPages };
 }
 
-async function replaceWhiteInPdfWithOffWhiteInPlace({
-  filePath,
-  offWhiteHex = "FFFEFA",
-  threshold = 245,
-  maxSaturation = 0.12,
-  dpi = 300,
-  stripSoftMask = false,
-  mode = "threshold",
-  labDeltaEMax = 20,
-  labSoftness = 8,
-  minLightness = 87,
-  featherPx = 0.8,
-  minAlpha = 0,
-  cleanupPasses = 1,
-  cleanupMinChannel = 248,
-  cleanupMaxSaturation = 0.35,
-  hardCleanupPasses = 0,
-  hardCleanupMinChannel = 246,
-  hardCleanupMinLightness = 98.5,
-  hardCleanupDeltaEMax = 14,
-  hardCleanupMaxSaturation = 0.6,
-  sanitizeTransparentRgb = true,
-  allowSoftMaskFallback = false,
-}) {
+// ---------------------------------------------------------------------------
+// Main white replacement pipeline
+// ---------------------------------------------------------------------------
+
+async function replaceWhiteInPdfWithOffWhiteInPlace(
+  options: ReplaceWhiteOptions,
+): Promise<Record<string, unknown>> {
+  const {
+    filePath,
+    offWhiteHex = "FFFEFA",
+    threshold = 245,
+    maxSaturation = 0.12,
+    dpi = 300,
+    stripSoftMask = false,
+    mode = "threshold",
+    labDeltaEMax = 20,
+    labSoftness = 8,
+    minLightness = 87,
+    featherPx = 0.8,
+    minAlpha = 0,
+    cleanupPasses = 1,
+    cleanupMinChannel = 248,
+    cleanupMaxSaturation = 0.35,
+    hardCleanupPasses = 0,
+    hardCleanupMinChannel = 246,
+    hardCleanupMinLightness = 98.5,
+    hardCleanupDeltaEMax = 14,
+    hardCleanupMaxSaturation = 0.6,
+    sanitizeTransparentRgb = true,
+    allowSoftMaskFallback = false,
+  } = options;
+
   await ensureGhostscriptAvailable();
 
   const targetRgb = parseHexColor(offWhiteHex);
@@ -1243,11 +1491,7 @@ async function replaceWhiteInPdfWithOffWhiteInPlace({
   await fsp.mkdir(tempDir, { recursive: true });
 
   try {
-    await rasterizePdfToPngs({
-      filePath,
-      outputPattern: pngPattern,
-      dpi: safeDpi,
-    });
+    await rasterizePdfToPngs({ filePath, outputPattern: pngPattern, dpi: safeDpi });
 
     const pngFiles = (await fsp.readdir(tempDir))
       .filter((fileName) => fileName.toLowerCase().endsWith(".png"))
@@ -1269,6 +1513,7 @@ async function replaceWhiteInPdfWithOffWhiteInPlace({
     let hardCleanupCandidatePixels = 0;
     let hardCleanupReplacedPixels = 0;
     let zeroedTransparentPixels = 0;
+
     for (const pngPath of pngFiles) {
       const stats = recolorWhitePngInPlace({
         pngPath,
@@ -1301,9 +1546,7 @@ async function replaceWhiteInPdfWithOffWhiteInPlace({
       hardCleanupCandidatePixels += stats.hardCleanupCandidatePixels;
       hardCleanupReplacedPixels += stats.hardCleanupReplacedPixels;
       zeroedTransparentPixels += stats.zeroedTransparentPixels;
-      if (stats.premultiplied_input) {
-        premultipliedPages += 1;
-      }
+      if (stats.premultiplied_input) premultipliedPages += 1;
     }
 
     let stripSoftMaskApplied = false;
@@ -1317,15 +1560,13 @@ async function replaceWhiteInPdfWithOffWhiteInPlace({
         outputPdfPath,
         allowSoftMaskFallback: safeAllowSoftMaskFallback,
       });
-      stripSoftMaskApplied = (rebuildStats?.opaqueCropPages ?? 0) > 0 && (rebuildStats?.softMaskFallbackPages ?? 0) === 0;
+      stripSoftMaskApplied =
+        (rebuildStats?.opaqueCropPages ?? 0) > 0 &&
+        (rebuildStats?.softMaskFallbackPages ?? 0) === 0;
       softMaskFallbackPages = rebuildStats?.softMaskFallbackPages ?? 0;
       opaqueCropPages = rebuildStats?.opaqueCropPages ?? 0;
     } else {
-      await rebuildPdfFromPngs({
-        sourcePdfPath: filePath,
-        pngPaths: pngFiles,
-        outputPdfPath,
-      });
+      await rebuildPdfFromPngs({ sourcePdfPath: filePath, pngPaths: pngFiles, outputPdfPath });
     }
 
     await fsp.rename(outputPdfPath, filePath);
@@ -1377,15 +1618,37 @@ async function replaceWhiteInPdfWithOffWhiteInPlace({
   }
 }
 
-function createFontSet(primary, fallbacks = []) {
-  const normalizedFallbacks = Array.isArray(fallbacks) ? fallbacks : [fallbacks];
-  return {
-    primary,
-    fallbacks: normalizedFallbacks.filter(Boolean),
-  };
+// ---------------------------------------------------------------------------
+// Font loading
+// ---------------------------------------------------------------------------
+
+async function loadFont(fontPath: string): Promise<Font> {
+  if (!fs.existsSync(fontPath)) {
+    throw new Error(`Font file not found: ${fontPath}`);
+  }
+  const fontBytes = await fsp.readFile(fontPath);
+  return fontkit.create(fontBytes);
 }
 
-function splitGraphemes(text) {
+async function loadOptionalFont(fontPath: unknown): Promise<Font | null> {
+  const normalizedPath = String(fontPath ?? "").trim();
+  if (!normalizedPath) return null;
+  if (!fs.existsSync(normalizedPath)) return null;
+
+  const fontBytes = await fsp.readFile(normalizedPath);
+  return fontkit.create(fontBytes);
+}
+
+function createFontSet(primary: Font, fallbacks: Font[] = []): FontSet {
+  const normalizedFallbacks = Array.isArray(fallbacks) ? fallbacks : [fallbacks];
+  return { primary, fallbacks: normalizedFallbacks.filter(Boolean) };
+}
+
+// ---------------------------------------------------------------------------
+// Text / grapheme utilities
+// ---------------------------------------------------------------------------
+
+function splitGraphemes(text: unknown): string[] {
   const value = String(text ?? "");
   if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
     const segmenter = new Intl.Segmenter("uk", { granularity: "grapheme" });
@@ -1394,29 +1657,25 @@ function splitGraphemes(text) {
   return Array.from(value);
 }
 
-function isMissingGlyph(glyph) {
-  return !glyph || glyph.id === 0 || glyph.name === ".notdef";
+function isMissingGlyph(glyph: Glyph | null | undefined): boolean {
+  return !glyph || glyph.id === 0 || (glyph as GlyphInternal).name === ".notdef";
 }
 
-function hasDrawableGlyphOutline(glyph) {
-  return (
-    !isMissingGlyph(glyph) &&
-    glyph.path &&
-    glyph.path.commands &&
-    glyph.path.commands.length
-  );
+function hasDrawableGlyphOutline(glyph: Glyph | null | undefined): boolean {
+  if (isMissingGlyph(glyph) || !glyph) return false;
+  const pathInternal = glyph.path as unknown as FontkitPathInternal | undefined;
+  return Boolean(pathInternal?.commands && pathInternal.commands.length > 0);
 }
 
-function tryResolveRunWithFonts(fontSet, text) {
+function tryResolveRunWithFonts(
+  fontSet: FontSet,
+  text: string,
+): { font: Font; run: GlyphRun; hasDrawableGlyph: boolean } {
   const fonts = [fontSet.primary, ...fontSet.fallbacks];
   for (const font of fonts) {
     const run = font.layout(text);
     if (run.glyphs.some((glyph) => hasDrawableGlyphOutline(glyph))) {
-      return {
-        font,
-        run,
-        hasDrawableGlyph: true,
-      };
+      return { font, run, hasDrawableGlyph: true };
     }
   }
 
@@ -1427,11 +1686,11 @@ function tryResolveRunWithFonts(fontSet, text) {
   };
 }
 
-function normalizeEmojiCodepointHex(value) {
+function normalizeEmojiCodepointHex(value: unknown): string {
   return Number(value).toString(16).toLowerCase();
 }
 
-function emojiClusterToCodepointKeys(cluster) {
+function emojiClusterToCodepointKeys(cluster: unknown): string[] {
   const codepoints = Array.from(String(cluster ?? "")).map((char) =>
     normalizeEmojiCodepointHex(char.codePointAt(0)),
   );
@@ -1445,18 +1704,18 @@ function emojiClusterToCodepointKeys(cluster) {
   return withVs16 ? [withVs16] : [];
 }
 
-async function resolveAppleEmojiPngBuffer(cluster, emojiRuntime, warnings) {
-  if (!emojiRuntime || emojiRuntime.mode !== "apple_image") {
-    return null;
-  }
+async function resolveAppleEmojiPngBuffer(
+  cluster: unknown,
+  emojiRuntime: EmojiRuntime | null,
+  warnings: string[],
+): Promise<Buffer | null> {
+  if (!emojiRuntime || emojiRuntime.mode !== "apple_image") return null;
 
   const cacheKey = String(cluster ?? "");
-  if (!cacheKey) {
-    return null;
-  }
+  if (!cacheKey) return null;
 
   if (emojiRuntime.bytesCache.has(cacheKey)) {
-    return emojiRuntime.bytesCache.get(cacheKey);
+    return emojiRuntime.bytesCache.get(cacheKey) ?? null;
   }
 
   const codepointKeys = emojiClusterToCodepointKeys(cacheKey);
@@ -1469,7 +1728,7 @@ async function resolveAppleEmojiPngBuffer(cluster, emojiRuntime, warnings) {
         emojiRuntime.bytesCache.set(cacheKey, bytes);
         return bytes;
       } catch (error) {
-        if (error.code !== "ENOENT") {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
           throw error;
         }
       }
@@ -1480,9 +1739,7 @@ async function resolveAppleEmojiPngBuffer(cluster, emojiRuntime, warnings) {
       try {
         const response = await fetchWithTimeout(
           url,
-          {
-            method: "GET",
-          },
+          { method: "GET" },
           DEFAULT_EMOJI_REQUEST_TIMEOUT_MS,
         );
         if (response.ok) {
@@ -1504,11 +1761,20 @@ async function resolveAppleEmojiPngBuffer(cluster, emojiRuntime, warnings) {
   return null;
 }
 
-function resolveClusterRuns(fontSet, cluster, emojiRuntime) {
+function containsEmoji(text: unknown): boolean {
+  return /\p{Extended_Pictographic}/u.test(String(text ?? ""));
+}
+
+function resolveClusterRuns(
+  fontSet: FontSet,
+  cluster: unknown,
+  emojiRuntime: EmojiRuntime | null,
+): Array<
+  | { kind: "run"; font: Font; run: GlyphRun; hasDrawableGlyph: boolean }
+  | { kind: "emoji"; cluster: string }
+> {
   const text = String(cluster ?? "");
-  if (!text) {
-    return [];
-  }
+  if (!text) return [];
 
   const candidateTexts = [text];
   if (text.includes("\uFE0F")) {
@@ -1529,7 +1795,6 @@ function resolveClusterRuns(fontSet, cluster, emojiRuntime) {
     return [{ kind: "emoji", cluster: text }];
   }
 
-  // Decompose unsupported grapheme clusters (ZWJ/VS16 sequences) to salvage renderable parts.
   const decomposed = Array.from(text).filter((char) => char !== "\uFE0F" && char !== "\u200D");
   if (decomposed.length > 1) {
     return decomposed.flatMap((part) => resolveClusterRuns(fontSet, part, emojiRuntime));
@@ -1539,9 +1804,18 @@ function resolveClusterRuns(fontSet, cluster, emojiRuntime) {
   return [{ kind: "run", ...fallback }];
 }
 
-function getLineLayout(fontSet, text, fontSize, emojiRuntime = null) {
+// ---------------------------------------------------------------------------
+// Text layout
+// ---------------------------------------------------------------------------
+
+function getLineLayout(
+  fontSet: FontSet,
+  text: string,
+  fontSize: number,
+  emojiRuntime: EmojiRuntime | null = null,
+): LineLayout {
   const clusters = splitGraphemes(text);
-  const segments = [];
+  const segments: LineSegment[] = [];
 
   let penXPt = 0;
   let minXPt = Number.POSITIVE_INFINITY;
@@ -1571,8 +1845,8 @@ function getLineLayout(fontSet, text, fontSize, emojiRuntime = null) {
       let runPenUnits = 0;
 
       for (let index = 0; index < resolved.run.glyphs.length; index += 1) {
-        const glyph = resolved.run.glyphs[index];
-        const position = resolved.run.positions[index];
+        const glyph = resolved.run.glyphs[index]!;
+        const position = resolved.run.positions[index]!;
         if (hasDrawableGlyphOutline(glyph)) {
           const glyphMinXPt =
             runStartXPt + (runPenUnits + position.xOffset + glyph.bbox.minX) * runScale;
@@ -1602,35 +1876,39 @@ function getLineLayout(fontSet, text, fontSize, emojiRuntime = null) {
     maxXPt = penXPt;
   }
 
-  return {
-    segments,
-    minX: minXPt,
-    width: Math.max(0, maxXPt - minXPt),
-  };
+  return { segments, minX: minXPt, width: Math.max(0, maxXPt - minXPt) };
 }
 
-function getTextWidth(fontSet, text, fontSize, emojiRuntime = null) {
+function getTextWidth(
+  fontSet: FontSet,
+  text: string,
+  fontSize: number,
+  emojiRuntime: EmojiRuntime | null = null,
+): number {
   return getLineLayout(fontSet, text, fontSize, emojiRuntime).width;
 }
 
-function glyphPathToSvg(glyph) {
-  const commands = glyph.path && glyph.path.commands ? glyph.path.commands : [];
-  const parts = [];
+function glyphPathToSvg(glyph: Glyph): string {
+  const pathInternal = glyph.path as unknown as FontkitPathInternal | undefined;
+  const commands: PathCommand[] = pathInternal?.commands ?? [];
+  const parts: string[] = [];
 
   for (const command of commands) {
-    const args = command.args || [];
+    const args = command.args ?? [];
     switch (command.command) {
       case "moveTo":
-        parts.push(`M ${args[0]} ${-args[1]}`);
+        parts.push(`M ${args[0]!} ${-args[1]!}`);
         break;
       case "lineTo":
-        parts.push(`L ${args[0]} ${-args[1]}`);
+        parts.push(`L ${args[0]!} ${-args[1]!}`);
         break;
       case "quadraticCurveTo":
-        parts.push(`Q ${args[0]} ${-args[1]} ${args[2]} ${-args[3]}`);
+        parts.push(`Q ${args[0]!} ${-args[1]!} ${args[2]!} ${-args[3]!}`);
         break;
       case "bezierCurveTo":
-        parts.push(`C ${args[0]} ${-args[1]} ${args[2]} ${-args[3]} ${args[4]} ${-args[5]}`);
+        parts.push(
+          `C ${args[0]!} ${-args[1]!} ${args[2]!} ${-args[3]!} ${args[4]!} ${-args[5]!}`,
+        );
         break;
       case "closePath":
         parts.push("Z");
@@ -1643,21 +1921,28 @@ function glyphPathToSvg(glyph) {
   return parts.join(" ");
 }
 
-function wrapParagraph(fontSet, text, fontSize, maxWidth, emojiRuntime = null) {
+function wrapParagraph(
+  fontSet: FontSet,
+  text: string,
+  fontSize: number,
+  maxWidth: number,
+  emojiRuntime: EmojiRuntime | null = null,
+): string[] {
   const words = String(text).split(/\s+/).filter(Boolean);
-  const lines = [];
+  const lines: string[] = [];
   let current = "";
-  const widthOf = (value) => getTextWidth(fontSet, value, fontSize, emojiRuntime);
+  const widthOf = (value: string): number =>
+    getTextWidth(fontSet, value, fontSize, emojiRuntime);
 
-  const pushCurrent = () => {
+  const pushCurrent = (): void => {
     if (current.trim().length) {
       lines.push(current.trim());
     }
     current = "";
   };
 
-  const breakLongWord = (word) => {
-    const parts = [];
+  const breakLongWord = (word: string): string[] => {
+    const parts: string[] = [];
     let chunk = "";
 
     for (const char of Array.from(word)) {
@@ -1666,17 +1951,11 @@ function wrapParagraph(fontSet, text, fontSize, maxWidth, emojiRuntime = null) {
         chunk = nextChunk;
         continue;
       }
-
-      if (chunk.length) {
-        parts.push(chunk);
-      }
+      if (chunk.length) parts.push(chunk);
       chunk = char;
     }
 
-    if (chunk.length) {
-      parts.push(chunk);
-    }
-
+    if (chunk.length) parts.push(chunk);
     return parts;
   };
 
@@ -1698,42 +1977,55 @@ function wrapParagraph(fontSet, text, fontSize, maxWidth, emojiRuntime = null) {
   return lines.length ? lines : [""];
 }
 
-function wrapText(font, text, fontSize, maxWidth, emojiRuntime = null) {
+function wrapText(
+  fontSet: FontSet,
+  text: string,
+  fontSize: number,
+  maxWidth: number,
+  emojiRuntime: EmojiRuntime | null = null,
+): string[] {
   return String(text)
     .split(/\r?\n/)
-    .flatMap((paragraph) => wrapParagraph(font, paragraph, fontSize, maxWidth, emojiRuntime));
+    .flatMap((paragraph) =>
+      wrapParagraph(fontSet, paragraph, fontSize, maxWidth, emojiRuntime),
+    );
 }
 
-function getLineMetrics(primaryFont, fontSize) {
+function getLineMetrics(primaryFont: Font, fontSize: number): LineMetrics {
   const scale = fontSize / primaryFont.unitsPerEm;
   const descent = primaryFont.descent * scale;
   const textHeight = (primaryFont.ascent - primaryFont.descent) * scale;
   const gap = Math.max(primaryFont.lineGap * scale, fontSize * 0.2);
 
-  return {
-    scale,
-    descent,
-    textHeight,
-    lineHeight: textHeight + gap,
-  };
+  return { scale, descent, textHeight, lineHeight: textHeight + gap };
 }
 
-function calculateBlockHeight(primaryFont, lines, fontSize) {
-  if (!lines.length) {
-    return 0;
-  }
+function calculateBlockHeight(primaryFont: Font, lines: string[], fontSize: number): number {
+  if (!lines.length) return 0;
   const metrics = getLineMetrics(primaryFont, fontSize);
   return metrics.textHeight + (lines.length - 1) * metrics.lineHeight;
 }
 
-function drawFallbackQuestionGlyph(page, primaryFont, fontSize, xPt, baselineY) {
+// ---------------------------------------------------------------------------
+// PDF drawing helpers
+// ---------------------------------------------------------------------------
+
+import type { PDFPage, PDFDocument as PDFDocumentType } from "pdf-lib";
+
+function drawFallbackQuestionGlyph(
+  page: PDFPage,
+  primaryFont: Font,
+  fontSize: number,
+  xPt: number,
+  baselineY: number,
+): void {
   const run = primaryFont.layout("?");
   const scale = fontSize / primaryFont.unitsPerEm;
   let penUnits = 0;
 
   for (let index = 0; index < run.glyphs.length; index += 1) {
-    const glyph = run.glyphs[index];
-    const position = run.positions[index];
+    const glyph = run.glyphs[index]!;
+    const position = run.positions[index]!;
     if (hasDrawableGlyphOutline(glyph)) {
       page.drawSvgPath(glyphPathToSvg(glyph), {
         x: xPt + (penUnits + position.xOffset) * scale,
@@ -1746,32 +2038,40 @@ function drawFallbackQuestionGlyph(page, primaryFont, fontSize, xPt, baselineY) 
   }
 }
 
-async function drawLine({
-  page,
-  pdfDoc,
-  fontSet,
-  line,
-  fontSize,
-  originX,
-  baselineY,
-  lineMetrics,
-  emojiRuntime,
-  warnings,
-  embeddedEmojiCache,
-}) {
+async function drawLine(options: {
+  page: PDFPage;
+  pdfDoc: PDFDocumentType;
+  fontSet: FontSet;
+  line: string;
+  fontSize: number;
+  originX: number;
+  baselineY: number;
+  lineMetrics: LineMetrics;
+  emojiRuntime: EmojiRuntime | null;
+  warnings: string[];
+  embeddedEmojiCache: Map<string, ReturnType<PDFDocumentType["embedPng"]> extends Promise<infer T> ? T : never>;
+}): Promise<void> {
+  const {
+    page,
+    pdfDoc,
+    fontSet,
+    line,
+    fontSize,
+    originX,
+    baselineY,
+    lineMetrics,
+    emojiRuntime,
+    warnings,
+    embeddedEmojiCache,
+  } = options;
+
   const layout = getLineLayout(fontSet, line, fontSize, emojiRuntime);
 
   for (const segment of layout.segments) {
     if (segment.kind === "emoji") {
       const bytes = await resolveAppleEmojiPngBuffer(segment.cluster, emojiRuntime, warnings);
       if (!bytes) {
-        drawFallbackQuestionGlyph(
-          page,
-          fontSet.primary,
-          fontSize,
-          originX + segment.xPt,
-          baselineY,
-        );
+        drawFallbackQuestionGlyph(page, fontSet.primary, fontSize, originX + segment.xPt, baselineY);
         continue;
       }
 
@@ -1789,7 +2089,6 @@ async function drawLine({
       let drawWidthPt = slotWidthPt;
       let drawHeightPt = drawWidthPt / imageAspect;
 
-      // Keep emoji inside a square slot and preserve original image proportions.
       if (drawHeightPt > slotHeightPt) {
         drawHeightPt = slotHeightPt;
         drawWidthPt = drawHeightPt * imageAspect;
@@ -1800,17 +2099,22 @@ async function drawLine({
 
       page.drawImage(image, {
         x: originX + segment.xPt + offsetXPt,
-        y: baselineY + lineMetrics.descent + (lineMetrics.textHeight - slotHeightPt) / 2 + offsetYPt,
+        y:
+          baselineY +
+          lineMetrics.descent +
+          (lineMetrics.textHeight - slotHeightPt) / 2 +
+          offsetYPt,
         width: drawWidthPt,
         height: drawHeightPt,
       });
       continue;
     }
 
+    // kind === "run"
     let penUnits = 0;
     for (let index = 0; index < segment.glyphs.length; index += 1) {
-      const glyph = segment.glyphs[index];
-      const position = segment.positions[index];
+      const glyph = segment.glyphs[index]!;
+      const position = segment.positions[index]!;
       if (hasDrawableGlyphOutline(glyph)) {
         page.drawSvgPath(glyphPathToSvg(glyph), {
           x: originX + segment.xPt + (penUnits + position.xOffset) * segment.scale,
@@ -1824,9 +2128,15 @@ async function drawLine({
   }
 }
 
-function fitTextToBox(fontSet, text, widthPt, heightPt, emojiRuntime = null) {
+function fitTextToBox(
+  fontSet: FontSet,
+  text: string,
+  widthPt: number,
+  heightPt: number,
+  emojiRuntime: EmojiRuntime | null = null,
+): { fontSize: number; lines: string[] } {
   let fontSize = Math.max(DEFAULT_FONT_SIZE, Math.floor(Math.min(widthPt, heightPt) * 0.65));
-  let lines = [];
+  let lines: string[] = [];
 
   while (fontSize >= MIN_FONT_SIZE) {
     lines = wrapText(fontSet, text, fontSize, widthPt, emojiRuntime);
@@ -1849,22 +2159,29 @@ function fitTextToBox(fontSet, text, widthPt, heightPt, emojiRuntime = null) {
     lines = wrapText(fontSet, text, fontSize, widthPt, emojiRuntime);
   }
 
-  return {
-    fontSize,
-    lines,
-  };
+  return { fontSize, lines };
 }
 
-async function drawTextInBox(page, pdfDoc, fontSet, text, box, emojiRuntime, warnings) {
+async function drawTextInBox(
+  page: PDFPage,
+  pdfDoc: PDFDocumentType,
+  fontSet: FontSet,
+  text: string,
+  box: { x: number; y: number; width: number; height: number },
+  emojiRuntime: EmojiRuntime | null,
+  warnings: string[],
+): Promise<void> {
   const fit = fitTextToBox(fontSet, text, box.width, box.height, emojiRuntime);
   const lineMetrics = getLineMetrics(fontSet.primary, fit.fontSize);
   const blockHeight = calculateBlockHeight(fontSet.primary, fit.lines, fit.fontSize);
   const contentBottom = box.y + (box.height - blockHeight) / 2;
   const baselineBottom = contentBottom - lineMetrics.descent;
-  const embeddedEmojiCache = new Map();
+
+  // Use a simpler type for the emoji image cache
+  const embeddedEmojiCache = new Map<string, Awaited<ReturnType<PDFDocumentType["embedPng"]>>>();
 
   for (let index = 0; index < fit.lines.length; index += 1) {
-    const line = fit.lines[index];
+    const line = fit.lines[index]!;
     const layout = getLineLayout(fontSet, line, fit.fontSize, emojiRuntime);
     const lineWidth = layout.width;
     const x = box.x + (box.width - lineWidth) / 2 - layout.minX;
@@ -1885,22 +2202,29 @@ async function drawTextInBox(page, pdfDoc, fontSet, text, box, emojiRuntime, war
   }
 }
 
-function getAdaptivePaddingMm(widthMm, heightMm) {
-  return Math.min(
-    MAX_PADDING_MM,
-    Math.max(MIN_PADDING_MM, Math.min(widthMm, heightMm) * 0.08),
-  );
+function getAdaptivePaddingMm(widthMm: number, heightMm: number): number {
+  return Math.min(MAX_PADDING_MM, Math.max(MIN_PADDING_MM, Math.min(widthMm, heightMm) * 0.08));
 }
 
-function resolveEngravingZone(format) {
-  const normalizedFormat = String(format || "").toUpperCase();
-  if (normalizedFormat === "A4") {
-    return ENGRAVING_ZONE_BY_FORMAT.A4;
-  }
-  return ENGRAVING_ZONE_BY_FORMAT.A5;
+function resolveEngravingZone(format: unknown): { widthMm: number; heightMm: number } {
+  const normalizedFormat = String(format ?? "").toUpperCase();
+  if (normalizedFormat === "A4") return ENGRAVING_ZONE_BY_FORMAT.A4!;
+  return ENGRAVING_ZONE_BY_FORMAT.A5!;
 }
 
-async function createEngravingPdf({ text, format, outPath, fontSet, emojiRuntime, warnings }) {
+// ---------------------------------------------------------------------------
+// Material PDF generators
+// ---------------------------------------------------------------------------
+
+async function createEngravingPdf(options: {
+  text: string;
+  format: unknown;
+  outPath: string;
+  fontSet: FontSet;
+  emojiRuntime: EmojiRuntime | null;
+  warnings: string[];
+}): Promise<Record<string, unknown>> {
+  const { text, format, outPath, fontSet, emojiRuntime, warnings } = options;
   const zone = resolveEngravingZone(format);
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([mmToPt(A3_WIDTH_MM), mmToPt(A3_HEIGHT_MM)]);
@@ -1910,12 +2234,20 @@ async function createEngravingPdf({ text, format, outPath, fontSet, emojiRuntime
   const paddingPt = mmToPt(paddingMm);
   const zoneOriginXPt = pageWidthPt - zoneWidthPt;
 
-  await drawTextInBox(page, pdfDoc, fontSet, text || "", {
-    x: zoneOriginXPt + paddingPt,
-    y: paddingPt,
-    width: zoneWidthPt - paddingPt * 2,
-    height: mmToPt(zone.heightMm) - paddingPt * 2,
-  }, emojiRuntime, warnings);
+  await drawTextInBox(
+    page,
+    pdfDoc,
+    fontSet,
+    text || "",
+    {
+      x: zoneOriginXPt + paddingPt,
+      y: paddingPt,
+      width: zoneWidthPt - paddingPt * 2,
+      height: mmToPt(zone.heightMm) - paddingPt * 2,
+    },
+    emojiRuntime,
+    warnings,
+  );
 
   const pdfBytes = await pdfDoc.save();
   await fsp.writeFile(outPath, pdfBytes);
@@ -1928,7 +2260,15 @@ async function createEngravingPdf({ text, format, outPath, fontSet, emojiRuntime
   };
 }
 
-async function createStickerPdf({ text, outPath, fontSet, stickerSizeMm, emojiRuntime, warnings }) {
+async function createStickerPdf(options: {
+  text: string;
+  outPath: string;
+  fontSet: FontSet;
+  stickerSizeMm: number;
+  emojiRuntime: EmojiRuntime | null;
+  warnings: string[];
+}): Promise<Record<string, unknown>> {
+  const { text, outPath, fontSet, stickerSizeMm, emojiRuntime, warnings } = options;
   const sizeMm = Number.isFinite(Number(stickerSizeMm))
     ? Number(stickerSizeMm)
     : DEFAULT_STICKER_SIZE_MM;
@@ -1937,32 +2277,45 @@ async function createStickerPdf({ text, outPath, fontSet, stickerSizeMm, emojiRu
   const paddingMm = Math.max(4, Math.min(8, sizeMm * 0.08));
   const paddingPt = mmToPt(paddingMm);
 
-  await drawTextInBox(page, pdfDoc, fontSet, text || "", {
-    x: paddingPt,
-    y: paddingPt,
-    width: mmToPt(sizeMm) - paddingPt * 2,
-    height: mmToPt(sizeMm) - paddingPt * 2,
-  }, emojiRuntime, warnings);
+  await drawTextInBox(
+    page,
+    pdfDoc,
+    fontSet,
+    text || "",
+    {
+      x: paddingPt,
+      y: paddingPt,
+      width: mmToPt(sizeMm) - paddingPt * 2,
+      height: mmToPt(sizeMm) - paddingPt * 2,
+    },
+    emojiRuntime,
+    warnings,
+  );
 
   const pdfBytes = await pdfDoc.save();
   await fsp.writeFile(outPath, pdfBytes);
 
-  return {
-    size_mm: sizeMm,
-  };
+  return { size_mm: sizeMm };
 }
 
-function resolveQrPlacement(format, qrPlacementByFormat) {
+// ---------------------------------------------------------------------------
+// QR embedding
+// ---------------------------------------------------------------------------
+
+function resolveQrPlacement(
+  format: unknown,
+  qrPlacementByFormat: Record<string, { rightMm?: number; bottomMm?: number; sizeMm?: number; xMm?: number; yMm?: number }>,
+): QrPlacement | null {
   const normalizedFormat = String(format ?? "").toUpperCase();
   const placement = qrPlacementByFormat?.[normalizedFormat] ?? null;
-  if (!placement) {
-    return null;
-  }
+  if (!placement) return null;
 
   const sizeMm = Number(placement.sizeMm);
-  const hasAbsoluteCoords = placement.xMm !== null && placement.xMm !== undefined &&
+  const hasAbsoluteCoords =
+    placement.xMm !== null && placement.xMm !== undefined &&
     placement.yMm !== null && placement.yMm !== undefined;
-  const hasRightBottomOffsets = placement.rightMm !== null && placement.rightMm !== undefined &&
+  const hasRightBottomOffsets =
+    placement.rightMm !== null && placement.rightMm !== undefined &&
     placement.bottomMm !== null && placement.bottomMm !== undefined;
 
   const xMm = hasAbsoluteCoords ? Number(placement.xMm) : Number.NaN;
@@ -1970,37 +2323,31 @@ function resolveQrPlacement(format, qrPlacementByFormat) {
   const rightMm = hasRightBottomOffsets ? Number(placement.rightMm) : Number.NaN;
   const bottomMm = hasRightBottomOffsets ? Number(placement.bottomMm) : Number.NaN;
 
-  if (!Number.isFinite(sizeMm) || sizeMm <= 0) {
-    return null;
-  }
+  if (!Number.isFinite(sizeMm) || sizeMm <= 0) return null;
 
   if (Number.isFinite(xMm) && Number.isFinite(yMm)) {
-    return {
-      anchor: "left-bottom",
-      xMm,
-      yMm,
-      sizeMm,
-    };
+    return { anchor: "left-bottom", xMm, yMm, sizeMm };
   }
 
   if (Number.isFinite(rightMm) && Number.isFinite(bottomMm)) {
-    return {
-      anchor: "right-bottom",
-      rightMm,
-      bottomMm,
-      sizeMm,
-    };
+    return { anchor: "right-bottom", rightMm, bottomMm, sizeMm };
   }
 
   return null;
 }
 
-function toPdfRgbFromHex(colorHex) {
+function toPdfRgbFromHex(colorHex: string): ReturnType<typeof rgb> {
   const parsed = parseHexColor(colorHex);
   return rgb(parsed.r / 255, parsed.g / 255, parsed.b / 255);
 }
 
-async function embedQrIntoPosterPdf({ posterPath, qrUrl, placement, qrHex = "FFFEFA" }) {
+async function embedQrIntoPosterPdf(options: {
+  posterPath: string;
+  qrUrl: string;
+  placement: QrPlacement;
+  qrHex?: string;
+}): Promise<Record<string, unknown>> {
+  const { posterPath, qrUrl, placement, qrHex = "FFFEFA" } = options;
   const pdfBytes = await fsp.readFile(posterPath);
   const pdfDoc = await PDFDocument.load(pdfBytes);
   const page = pdfDoc.getPage(0);
@@ -2009,10 +2356,12 @@ async function embedQrIntoPosterPdf({ posterPath, qrUrl, placement, qrHex = "FFF
   const pageHeightPt = page.getHeight();
   const xPt =
     placement.anchor === "right-bottom"
-      ? pageWidthPt - mmToPt(placement.rightMm) - sizePt
-      : mmToPt(placement.xMm);
+      ? pageWidthPt - mmToPt(placement.rightMm!) - sizePt
+      : mmToPt(placement.xMm!);
   const yPt =
-    placement.anchor === "right-bottom" ? mmToPt(placement.bottomMm) : mmToPt(placement.yMm);
+    placement.anchor === "right-bottom"
+      ? mmToPt(placement.bottomMm!)
+      : mmToPt(placement.yMm!);
 
   if (
     !Number.isFinite(xPt) ||
@@ -2025,28 +2374,22 @@ async function embedQrIntoPosterPdf({ posterPath, qrUrl, placement, qrHex = "FFF
     throw new Error("Computed QR placement is out of page bounds.");
   }
 
-  const qrModel = QRCode.create(String(qrUrl), {
-    errorCorrectionLevel: "M",
-  });
+  const qrModel = QRCode.create(String(qrUrl), { errorCorrectionLevel: "M" });
   const moduleCount = qrModel?.modules?.size;
   if (!Number.isFinite(moduleCount) || moduleCount <= 0) {
     throw new Error("Failed to build QR matrix.");
   }
 
-  // Keep a transparent quiet zone around QR (no background fill).
   const quietZoneModules = 1;
   const moduleSizePt = sizePt / (moduleCount + quietZoneModules * 2);
   const modulesOriginX = xPt + quietZoneModules * moduleSizePt;
   const modulesOriginY = yPt + quietZoneModules * moduleSizePt;
   const qrColor = toPdfRgbFromHex(qrHex);
-  // Prevent thin stitching gaps between adjacent module rectangles in some PDF viewers/RIPs.
   const moduleOverlapPt = Math.min(0.2, moduleSizePt * 0.08);
 
   for (let row = 0; row < moduleCount; row += 1) {
     for (let col = 0; col < moduleCount; col += 1) {
-      if (!qrModel.modules.get(col, row)) {
-        continue;
-      }
+      if (!qrModel.modules.get(col, row)) continue;
 
       page.drawRectangle({
         x: modulesOriginX + col * moduleSizePt - moduleOverlapPt / 2,
@@ -2069,7 +2412,17 @@ async function embedQrIntoPosterPdf({ posterPath, qrUrl, placement, qrHex = "FFF
   };
 }
 
-async function downloadFile({ url, outPath, sourceRequestOptions = {} }) {
+// ---------------------------------------------------------------------------
+// File download
+// ---------------------------------------------------------------------------
+
+async function downloadFile(options: {
+  url: unknown;
+  outPath: string;
+  sourceRequestOptions?: SourceRequestOptions;
+}): Promise<Record<string, unknown>> {
+  const { url, outPath, sourceRequestOptions = {} } = options;
+
   if (!url) {
     throw new Error("Poster source URL is missing.");
   }
@@ -2080,16 +2433,13 @@ async function downloadFile({ url, outPath, sourceRequestOptions = {} }) {
 
   const requestOptions = normalizeSourceRequestOptions(sourceRequestOptions);
   const maxAttempts = requestOptions.retries + 1;
-  let lastError = null;
+  let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const response = await fetchWithTimeout(
-        url,
-        {
-          method: "GET",
-          redirect: "follow",
-        },
+        String(url),
+        { method: "GET", redirect: "follow" },
         requestOptions.timeoutMs,
       );
 
@@ -2097,8 +2447,7 @@ async function downloadFile({ url, outPath, sourceRequestOptions = {} }) {
         const retryable = isRetryableStatusCode(response.status);
         if (retryable && attempt < maxAttempts) {
           const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
-          const delayMs =
-            retryAfterMs ?? computeBackoffDelayMs(attempt, requestOptions.retryBaseMs);
+          const delayMs = retryAfterMs ?? computeBackoffDelayMs(attempt, requestOptions.retryBaseMs);
           await sleep(delayMs);
           continue;
         }
@@ -2110,9 +2459,7 @@ async function downloadFile({ url, outPath, sourceRequestOptions = {} }) {
       const buffer = Buffer.from(arrayBuffer);
       await fsp.writeFile(outPath, buffer);
 
-      return {
-        bytes: buffer.length,
-      };
+      return { bytes: buffer.length };
     } catch (error) {
       lastError = error;
       if (attempt < maxAttempts && isRetryableFetchError(error)) {
@@ -2128,79 +2475,62 @@ async function downloadFile({ url, outPath, sourceRequestOptions = {} }) {
   throw lastError ?? new Error("Failed to download poster PDF.");
 }
 
-async function loadFont(fontPath) {
-  if (!fs.existsSync(fontPath)) {
-    throw new Error(`Font file not found: ${fontPath}`);
-  }
-  const fontBytes = await fsp.readFile(fontPath);
-  return fontkit.create(fontBytes);
-}
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
-async function loadOptionalFont(fontPath) {
-  const normalizedPath = String(fontPath ?? "").trim();
-  if (!normalizedPath) {
-    return null;
-  }
+export async function generateMaterialFiles(
+  input: GenerateMaterialFilesInput,
+): Promise<PdfPipelineResult> {
+  const {
+    layoutPlan,
+    outputRoot,
+    orderId,
+    fontPath,
+    emojiFontPath = "",
+    emojiRenderMode = "font",
+    appleEmojiBaseUrl = "https://em-content.zobj.net/source/apple/391",
+    appleEmojiAssetsDir = "",
+    stickerSizeMm = DEFAULT_STICKER_SIZE_MM,
+    colorSpace = "RGB",
+    qrPlacementByFormat = {},
+    sourceRequestOptions = {},
+    replaceWhiteWithOffWhite = true,
+    offWhiteHex = "FFFEFA",
+    whiteThreshold = 245,
+    whiteMaxSaturation = 0.12,
+    rasterizeDpi = 300,
+    whiteReplaceMode = "photoshop_like",
+    whiteLabDeltaEMax = 20,
+    whiteLabSoftness = 8,
+    whiteMinLightness = 87,
+    whiteFeatherPx = 0.8,
+    whiteMinAlpha = 0,
+    whiteCleanupPasses = 1,
+    whiteCleanupMinChannel = 248,
+    whiteCleanupMaxSaturation = 0.35,
+    whiteHardCleanupPasses = 2,
+    whiteHardCleanupMinChannel = 246,
+    whiteHardCleanupMinLightness = 98.5,
+    whiteHardCleanupDeltaEMax = 14,
+    whiteHardCleanupMaxSaturation = 0.6,
+    whiteSanitizeTransparentRgb = true,
+    whiteAllowSoftMaskFallback = false,
+    whiteReplaceIterations = 2,
+    whiteFinalEnforce = true,
+    whiteFinalIterations = 2,
+    whiteFinalThreshold = 254,
+    whiteFinalMaxSaturation = 0.25,
+    whiteFinalDpi = 300,
+  } = input;
 
-  if (!fs.existsSync(normalizedPath)) {
-    return null;
-  }
-
-  const fontBytes = await fsp.readFile(normalizedPath);
-  return fontkit.create(fontBytes);
-}
-
-function containsEmoji(text) {
-  return /\p{Extended_Pictographic}/u.test(String(text ?? ""));
-}
-
-async function generateMaterialFiles({
-  layoutPlan,
-  outputRoot,
-  orderId,
-  fontPath,
-  emojiFontPath = "",
-  emojiRenderMode = "font",
-  appleEmojiBaseUrl = "https://em-content.zobj.net/source/apple/391",
-  appleEmojiAssetsDir = "",
-  stickerSizeMm = DEFAULT_STICKER_SIZE_MM,
-  colorSpace = "RGB",
-  qrPlacementByFormat = {},
-  sourceRequestOptions = {},
-  replaceWhiteWithOffWhite = true,
-  offWhiteHex = "FFFEFA",
-  whiteThreshold = 245,
-  whiteMaxSaturation = 0.12,
-  rasterizeDpi = 300,
-  whiteReplaceMode = "photoshop_like",
-  whiteLabDeltaEMax = 20,
-  whiteLabSoftness = 8,
-  whiteMinLightness = 87,
-  whiteFeatherPx = 0.8,
-  whiteMinAlpha = 0,
-  whiteCleanupPasses = 1,
-  whiteCleanupMinChannel = 248,
-  whiteCleanupMaxSaturation = 0.35,
-  whiteHardCleanupPasses = 2,
-  whiteHardCleanupMinChannel = 246,
-  whiteHardCleanupMinLightness = 98.5,
-  whiteHardCleanupDeltaEMax = 14,
-  whiteHardCleanupMaxSaturation = 0.6,
-  whiteSanitizeTransparentRgb = true,
-  whiteAllowSoftMaskFallback = false,
-  whiteReplaceIterations = 2,
-  whiteFinalEnforce = true,
-  whiteFinalIterations = 2,
-  whiteFinalThreshold = 254,
-  whiteFinalMaxSaturation = 0.25,
-  whiteFinalDpi = 300,
-}) {
   const resolvedOutputRoot = path.resolve(outputRoot);
   const orderOutputDir = path.join(resolvedOutputRoot, String(orderId));
   await fsp.mkdir(orderOutputDir, { recursive: true });
   const normalizedColorSpace = normalizeColorSpace(colorSpace);
-  const warnings = [];
+  const warnings: string[] = [];
   const safeSourceRequestOptions = normalizeSourceRequestOptions(sourceRequestOptions);
+
   const safeWhiteReplaceIterations = Number.isFinite(Number(whiteReplaceIterations))
     ? Math.max(1, Math.min(3, Math.floor(Number(whiteReplaceIterations))))
     : 2;
@@ -2228,14 +2558,16 @@ async function generateMaterialFiles({
   const safeWhiteHardCleanupDeltaEMax = Number.isFinite(Number(whiteHardCleanupDeltaEMax))
     ? Math.max(0.1, Number(whiteHardCleanupDeltaEMax))
     : 14;
-  const safeWhiteHardCleanupMaxSaturation = Number.isFinite(Number(whiteHardCleanupMaxSaturation))
+  const safeWhiteHardCleanupMaxSaturation = Number.isFinite(
+    Number(whiteHardCleanupMaxSaturation),
+  )
     ? Math.max(0, Math.min(1, Number(whiteHardCleanupMaxSaturation)))
     : 0.6;
   const safeWhiteSanitizeTransparentRgb = Boolean(whiteSanitizeTransparentRgb);
   const safeEmojiRenderMode =
     String(emojiRenderMode ?? "font").trim().toLowerCase() === "apple_image"
-      ? "apple_image"
-      : "font";
+      ? ("apple_image" as const)
+      : ("font" as const);
   const safeAppleEmojiBaseUrl = String(appleEmojiBaseUrl ?? "")
     .trim()
     .replace(/\/+$/, "");
@@ -2243,7 +2575,8 @@ async function generateMaterialFiles({
   const resolvedAppleEmojiAssetsDir = safeAppleEmojiAssetsDir
     ? path.resolve(safeAppleEmojiAssetsDir)
     : "";
-  const emojiRuntime = {
+
+  const emojiRuntime: EmojiRuntime = {
     mode: safeEmojiRenderMode,
     baseUrl: safeAppleEmojiBaseUrl,
     assetsDir: resolvedAppleEmojiAssetsDir,
@@ -2266,19 +2599,21 @@ async function generateMaterialFiles({
   try {
     await fsp.unlink(path.join(orderOutputDir, "QR.pdf"));
   } catch (error) {
-    if (error && error.code !== "ENOENT") {
-      warnings.push(`Не вдалося видалити застарілий QR.pdf: ${error.message}`);
+    if (error && (error as NodeJS.ErrnoException).code !== "ENOENT") {
+      warnings.push(
+        `Не вдалося видалити застарілий QR.pdf: ${(error as Error).message}`,
+      );
     }
   }
 
   const textBasedMaterials = (layoutPlan?.materials ?? []).filter(
     (material) => material.type === "engraving" || material.type === "sticker",
   );
-  let fontSet = null;
+  let fontSet: FontSet | null = null;
   if (textBasedMaterials.length) {
     const primaryFont = await loadFont(path.resolve(fontPath));
     const resolvedEmojiFontPath = String(emojiFontPath ?? "").trim();
-    let emojiFont = null;
+    let emojiFont: Font | null = null;
 
     if (resolvedEmojiFontPath) {
       emojiFont = await loadOptionalFont(path.resolve(resolvedEmojiFontPath));
@@ -2291,7 +2626,9 @@ async function generateMaterialFiles({
 
     fontSet = createFontSet(primaryFont, emojiFont ? [emojiFont] : []);
 
-    const hasEmojiInText = textBasedMaterials.some((material) => containsEmoji(material.text));
+    const hasEmojiInText = textBasedMaterials.some((material) =>
+      containsEmoji(material.text),
+    );
     if (hasEmojiInText) {
       if (emojiRuntime.mode === "apple_image") {
         if (!emojiRuntime.assetsDir && !emojiRuntime.baseUrl) {
@@ -2311,21 +2648,24 @@ async function generateMaterialFiles({
     await ensureGhostscriptAvailable();
   }
 
-  const generated = [];
-  const failed = [];
+  const generated: PdfGeneratedFile[] = [];
+  const failed: PdfFailedFile[] = [];
 
-  const applyWhiteRecolorWithIterations = async ({ filePath, stripSoftMask }) => {
-    let lastStats = null;
+  const applyWhiteRecolorWithIterations = async (opts: {
+    filePath: string;
+    stripSoftMask: boolean;
+  }): Promise<Record<string, unknown>> => {
+    let lastStats: Record<string, unknown> | null = null;
     let iterationsUsed = 0;
 
     for (let pass = 0; pass < safeWhiteReplaceIterations; pass += 1) {
       const passStats = await replaceWhiteInPdfWithOffWhiteInPlace({
-        filePath,
+        filePath: opts.filePath,
         offWhiteHex,
         threshold: whiteThreshold,
         maxSaturation: whiteMaxSaturation,
         dpi: rasterizeDpi,
-        stripSoftMask,
+        stripSoftMask: opts.stripSoftMask,
         mode: whiteReplaceMode,
         labDeltaEMax: whiteLabDeltaEMax,
         labSoftness: whiteLabSoftness,
@@ -2341,20 +2681,16 @@ async function generateMaterialFiles({
         hardCleanupDeltaEMax: safeWhiteHardCleanupDeltaEMax,
         hardCleanupMaxSaturation: safeWhiteHardCleanupMaxSaturation,
         sanitizeTransparentRgb: safeWhiteSanitizeTransparentRgb,
-        // Posters can contain intentional transparent islands inside the visible bounds.
-        // Preserve alpha in that case; otherwise transparent controls get flattened to black.
-        allowSoftMaskFallback: stripSoftMask ? true : whiteAllowSoftMaskFallback,
+        allowSoftMaskFallback: opts.stripSoftMask ? true : whiteAllowSoftMaskFallback,
       });
       lastStats = passStats;
       iterationsUsed += 1;
 
       const changedPixels =
-        (passStats?.replaced_pixels ?? 0) +
-        (passStats?.cleanup_replaced_pixels ?? 0) +
-        (passStats?.forced_opaque_pixels ?? 0);
-      if (changedPixels <= 0) {
-        break;
-      }
+        ((passStats?.replaced_pixels as number) ?? 0) +
+        ((passStats?.cleanup_replaced_pixels as number) ?? 0) +
+        ((passStats?.forced_opaque_pixels as number) ?? 0);
+      if (changedPixels <= 0) break;
     }
 
     return {
@@ -2364,25 +2700,25 @@ async function generateMaterialFiles({
     };
   };
 
-  const applyStrictFinalWhiteCleanup = async ({ filePath, stripSoftMask }) => {
+  const applyStrictFinalWhiteCleanup = async (opts: {
+    filePath: string;
+    stripSoftMask: boolean;
+  }): Promise<Record<string, unknown>> => {
     if (!whiteFinalEnforce) {
-      return {
-        applied: false,
-        reason: "disabled",
-      };
+      return { applied: false, reason: "disabled" };
     }
 
-    let lastStats = null;
+    let lastStats: Record<string, unknown> | null = null;
     let iterationsUsed = 0;
 
     for (let pass = 0; pass < safeWhiteFinalIterations; pass += 1) {
       const passStats = await replaceWhiteInPdfWithOffWhiteInPlace({
-        filePath,
+        filePath: opts.filePath,
         offWhiteHex,
         threshold: safeWhiteFinalThreshold,
         maxSaturation: safeWhiteFinalMaxSaturation,
         dpi: safeWhiteFinalDpi,
-        stripSoftMask,
+        stripSoftMask: opts.stripSoftMask,
         mode: "threshold",
         minAlpha: 0,
         cleanupPasses: 0,
@@ -2394,19 +2730,16 @@ async function generateMaterialFiles({
         hardCleanupDeltaEMax: safeWhiteHardCleanupDeltaEMax,
         hardCleanupMaxSaturation: safeWhiteHardCleanupMaxSaturation,
         sanitizeTransparentRgb: safeWhiteSanitizeTransparentRgb,
-        // Keep transparent shapes intact to avoid black background artifacts.
         allowSoftMaskFallback: true,
       });
       lastStats = passStats;
       iterationsUsed += 1;
 
       const changedPixels =
-        (passStats?.replaced_pixels ?? 0) +
-        (passStats?.cleanup_replaced_pixels ?? 0) +
-        (passStats?.forced_opaque_pixels ?? 0);
-      if (changedPixels <= 0) {
-        break;
-      }
+        ((passStats?.replaced_pixels as number) ?? 0) +
+        ((passStats?.cleanup_replaced_pixels as number) ?? 0) +
+        ((passStats?.forced_opaque_pixels as number) ?? 0);
+      if (changedPixels <= 0) break;
     }
 
     return {
@@ -2422,8 +2755,7 @@ async function generateMaterialFiles({
     const filePath = path.join(orderOutputDir, fileName);
 
     try {
-      let details = {};
-
+      let details: Record<string, unknown> = {};
       let whiteRecolorAppliedEarly = false;
 
       if (material.type === "poster") {
@@ -2433,7 +2765,6 @@ async function generateMaterialFiles({
           sourceRequestOptions: safeSourceRequestOptions,
         });
 
-        // Recolor poster before QR embedding so QR stays crisp and fully filled.
         if (replaceWhiteWithOffWhite) {
           details.white_recolor = await applyWhiteRecolorWithIterations({
             filePath,
@@ -2445,11 +2776,10 @@ async function generateMaterialFiles({
         if (layoutPlan?.qr?.should_generate && layoutPlan?.qr?.url) {
           const qrPlacement = resolveQrPlacement(material.format, qrPlacementByFormat);
           if (!qrPlacement) {
-            warnings.push(`QR для формату ${material.format || "N/A"} не вбудовано: не задані параметри розміщення.`);
-            details.qr = {
-              embedded: false,
-              reason: "placement_not_configured",
-            };
+            warnings.push(
+              `QR для формату ${material.format || "N/A"} не вбудовано: не задані параметри розміщення.`,
+            );
+            details.qr = { embedded: false, reason: "placement_not_configured" };
           } else {
             details.qr = await embedQrIntoPosterPdf({
               posterPath: filePath,
@@ -2464,7 +2794,7 @@ async function generateMaterialFiles({
           text: material.text || "",
           format: material.format,
           outPath: filePath,
-          fontSet,
+          fontSet: fontSet!,
           emojiRuntime,
           warnings,
         });
@@ -2472,13 +2802,13 @@ async function generateMaterialFiles({
         details = await createStickerPdf({
           text: material.text || "",
           outPath: filePath,
-          fontSet,
+          fontSet: fontSet!,
           stickerSizeMm,
           emojiRuntime,
           warnings,
         });
       } else {
-        throw new Error(`Unsupported material type: ${material.type}`);
+        throw new Error(`Unsupported material type: ${(material as { type: string }).type}`);
       }
 
       if (replaceWhiteWithOffWhite && !whiteRecolorAppliedEarly) {
@@ -2501,18 +2831,13 @@ async function generateMaterialFiles({
 
       details.color_space = normalizedColorSpace;
 
-      generated.push({
-        type: material.type,
-        filename: fileName,
-        path: filePath,
-        details,
-      });
+      generated.push({ type: material.type, filename: fileName, path: filePath, details });
     } catch (error) {
       failed.push({
         type: material.type,
         filename: fileName,
         path: filePath,
-        message: error.message,
+        message: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -2526,17 +2851,13 @@ async function generateMaterialFiles({
   };
 }
 
-async function enforceOffWhiteInPdf({
-  filePath,
-  offWhiteHex = "FFFEFA",
-  rasterizeDpi = 300,
-}) {
+export async function enforceOffWhiteInPdf(input: EnforceOffWhiteInput): Promise<Record<string, unknown>> {
   return replaceWhiteInPdfWithOffWhiteInPlace({
-    filePath,
-    offWhiteHex,
+    filePath: input.filePath,
+    offWhiteHex: input.offWhiteHex ?? "FFFEFA",
     threshold: 254,
     maxSaturation: 0.25,
-    dpi: rasterizeDpi,
+    dpi: input.rasterizeDpi ?? 300,
     stripSoftMask: true,
     mode: "threshold",
     minAlpha: 0,
@@ -2552,8 +2873,3 @@ async function enforceOffWhiteInPdf({
     allowSoftMaskFallback: true,
   });
 }
-
-module.exports = {
-  generateMaterialFiles,
-  enforceOffWhiteInPdf,
-};

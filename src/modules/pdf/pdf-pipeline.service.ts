@@ -13,6 +13,7 @@ import {
 } from "../qr/spotify-code";
 import type { ShortenUrlResult, UrlShortenerService } from "../url-shortener/shortener-service";
 import type { GeneratePdfMaterialsInput, PdfGeneratedFile, PdfPipelineResult } from "./pdf.types";
+import { generateMaterialFiles, enforceOffWhiteInPdf } from "./material-generator";
 
 type LegacyLayoutMaterial = {
   type: "poster" | "engraving" | "sticker";
@@ -42,39 +43,6 @@ type LegacyLayoutPlan = {
     should_generate: boolean;
   };
   materials: LegacyLayoutMaterial[];
-};
-
-type LegacyGenerateMaterialFiles = (input: {
-  layoutPlan: LegacyLayoutPlan;
-  outputRoot: string;
-  orderId: string;
-  fontPath: string;
-  emojiFontPath?: string;
-  emojiRenderMode?: "font" | "apple_image";
-  appleEmojiBaseUrl?: string;
-  appleEmojiAssetsDir?: string;
-  stickerSizeMm?: number;
-  colorSpace?: "RGB" | "CMYK";
-  qrPlacementByFormat?: Record<string, { rightMm: number; bottomMm: number; sizeMm: number }>;
-  replaceWhiteWithOffWhite?: boolean;
-  offWhiteHex?: string;
-  rasterizeDpi?: number;
-  sourceRequestOptions?: {
-    timeoutMs: number;
-    retries: number;
-    retryBaseMs: number;
-  };
-}) => Promise<PdfPipelineResult>;
-
-type LegacyEnforceOffWhiteInPdf = (input: {
-  filePath: string;
-  offWhiteHex?: string;
-  rasterizeDpi?: number;
-}) => Promise<unknown>;
-
-type LegacyMaterialGeneratorModule = {
-  generateMaterialFiles: LegacyGenerateMaterialFiles;
-  enforceOffWhiteInPdf?: LegacyEnforceOffWhiteInPdf;
 };
 
 type CreatePdfPipelineServiceParams = {
@@ -126,9 +94,6 @@ type QrUrlResolution = {
   provider: ShortenUrlResult["provider"] | null;
   warnings: string[];
 };
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const materialGeneratorRuntime = require("./material-generator.runtime.js") as LegacyMaterialGeneratorModule;
 
 export function toLegacyLayoutPlan(
   layoutPlan: LayoutPlan,
@@ -281,9 +246,6 @@ export class PdfPipelineService {
     this.spotifyRequestOptions = params.spotifyRequestOptions;
     this.sourceRequestOptions = params.sourceRequestOptions;
     this.qrPlacementByFormat = params.qrPlacementByFormat;
-    if (typeof materialGeneratorRuntime.generateMaterialFiles !== "function") {
-      throw new Error("Material generator runtime is invalid.");
-    }
   }
 
   async generateForOrder(input: GeneratePdfMaterialsInput): Promise<PdfPipelineResult> {
@@ -324,7 +286,7 @@ export class PdfPipelineService {
       qrPlan: this.buildQrPlanCounters(posterQrDecisions),
     });
 
-    const result = await materialGeneratorRuntime.generateMaterialFiles({
+    const result = await generateMaterialFiles({
       layoutPlan,
       outputRoot: this.outputRoot,
       orderId,
@@ -795,9 +757,7 @@ export class PdfPipelineService {
     }, 0);
   }
 
-  private getEnforceOffWhiteInPdf(): LegacyEnforceOffWhiteInPdf | null {
-    return typeof materialGeneratorRuntime.enforceOffWhiteInPdf === "function"
-      ? materialGeneratorRuntime.enforceOffWhiteInPdf
-      : null;
+  private getEnforceOffWhiteInPdf(): typeof enforceOffWhiteInPdf | null {
+    return enforceOffWhiteInPdf;
   }
 }

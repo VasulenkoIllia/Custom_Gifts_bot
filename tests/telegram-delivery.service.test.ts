@@ -12,7 +12,16 @@ test("TelegramDeliveryService throws when telegram runtime returns no file messa
       retries: 2,
       retryBaseMs: 900,
     },
-    sender: async () => ({ chat_id: "-100", message_ids: [] }),
+    sender: async () => ({
+      chat_id: "-100",
+      message_thread_id: null,
+      preview_count: 0,
+      preview_message_ids: [],
+      preview_errors: [],
+      message_count: 0,
+      message_ids: [],
+      caption: "",
+    }),
   });
 
   await assert.rejects(
@@ -52,9 +61,12 @@ test("TelegramDeliveryService propagates preview warnings from telegram runtime"
     },
     sender: async () => ({
       chat_id: "-100123",
-      message_ids: [501, "502"],
-      preview_message_ids: ["500"],
+      message_thread_id: null,
+      preview_count: 1,
+      preview_message_ids: [500],
       preview_errors: ["Preview image download failed (404)"],
+      message_count: 2,
+      message_ids: [501, 502],
       caption: "ok",
     }),
   });
@@ -109,8 +121,12 @@ test("TelegramDeliveryService reuses stored delivery result without calling runt
       senderCalls += 1;
       return {
         chat_id: "-100999",
-        message_ids: [601],
+        message_thread_id: null,
+        preview_count: 1,
         preview_message_ids: [600],
+        preview_errors: [],
+        message_count: 1,
+        message_ids: [601],
         caption: "cached",
       };
     },

@@ -1,6 +1,4 @@
-"use strict";
-
-const fsp = require("node:fs/promises");
+import fsp from "node:fs/promises";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const MAX_MEDIA_GROUP_SIZE = 10;
@@ -9,19 +7,88 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_RETRIES = 2;
 const DEFAULT_RETRY_BASE_MS = 900;
 
-function ensureValue(value, name) {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type RequestOptions = {
+  timeoutMs?: number;
+  retries?: number;
+  retryBaseMs?: number;
+};
+
+type NormalizedRequestOptions = {
+  timeoutMs: number;
+  retries: number;
+  retryBaseMs: number;
+};
+
+type TelegramFile = {
+  path: string;
+  filename: string;
+};
+
+type TelegramMessage = {
+  message_id: number;
+  [key: string]: unknown;
+};
+
+type TelegramRawPayload = {
+  ok?: boolean;
+  result?: unknown;
+  parameters?: { retry_after?: number | string };
+  [key: string]: unknown;
+};
+
+type BuildCaptionParams = {
+  orderId: string;
+  fileNames: string[];
+  flags: string[];
+  warnings: string[];
+  qrUrl: string | null;
+};
+
+export type SendOrderFilesInput = {
+  botToken: string;
+  chatId: string;
+  messageThreadId?: string;
+  orderId: string;
+  flags: string[];
+  warnings: string[];
+  qrUrl: string | null;
+  previewImages: string[];
+  generatedFiles: TelegramFile[];
+  requestOptions?: RequestOptions;
+};
+
+export type SendOrderFilesResult = {
+  chat_id: string;
+  message_thread_id: string | null;
+  preview_count: number;
+  preview_message_ids: number[];
+  preview_errors: string[];
+  message_count: number;
+  message_ids: number[];
+  caption: string;
+};
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function ensureValue(value: unknown, name: string): void {
   if (value === undefined || value === null || value === "") {
     throw new Error(`${name} is not configured.`);
   }
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
 }
 
-function normalizeRequestOptions(requestOptions = {}) {
+function normalizeRequestOptions(requestOptions: RequestOptions = {}): NormalizedRequestOptions {
   const timeoutMs = Number.parseInt(String(requestOptions.timeoutMs ?? DEFAULT_TIMEOUT_MS), 10);
   const retries = Number.parseInt(String(requestOptions.retries ?? DEFAULT_RETRIES), 10);
   const retryBaseMs = Number.parseInt(
@@ -38,32 +105,40 @@ function normalizeRequestOptions(requestOptions = {}) {
   };
 }
 
-function computeBackoffDelayMs(attempt, baseDelayMs, maxDelayMs = 20_000) {
+function computeBackoffDelayMs(attempt: number, baseDelayMs: number, maxDelayMs = 20_000): number {
   const safeAttempt = Math.max(1, attempt);
   const cappedExp = Math.min(8, safeAttempt - 1);
-  const exponential = baseDelayMs * (2 ** cappedExp);
+  const exponential = baseDelayMs * 2 ** cappedExp;
   const jitter = Math.floor(Math.random() * Math.min(1_000, baseDelayMs));
   return Math.min(maxDelayMs, exponential + jitter);
 }
 
-function isRetryableStatusCode(statusCode) {
-  return statusCode === 408 || statusCode === 409 || statusCode === 425 || statusCode === 429 || statusCode >= 500;
+function isRetryableStatusCode(statusCode: number): boolean {
+  return (
+    statusCode === 408 ||
+    statusCode === 409 ||
+    statusCode === 425 ||
+    statusCode === 429 ||
+    statusCode >= 500
+  );
 }
 
-function isRetryableFetchError(error) {
+function isRetryableFetchError(error: unknown): boolean {
   if (!error) {
     return false;
   }
 
-  if (error.name === "AbortError") {
+  if ((error as { name?: unknown }).name === "AbortError") {
     return true;
   }
 
-  const message = String(error.message ?? "");
-  return /fetch failed|network|timeout|socket|econnreset|etimedout|enotfound|eai_again/i.test(message);
+  const message = String((error as { message?: unknown }).message ?? "");
+  return /fetch failed|network|timeout|socket|econnreset|etimedout|enotfound|eai_again/i.test(
+    message,
+  );
 }
 
-function parseRetryAfterMs(value) {
+function parseRetryAfterMs(value: unknown): number | null {
   if (value === undefined || value === null || value === "") {
     return null;
   }
@@ -82,13 +157,23 @@ function parseRetryAfterMs(value) {
   return null;
 }
 
-function parseTelegramRetryAfterMs(payload, response) {
-  const payloadRetryAfter = payload?.parameters?.retry_after;
-  const headerRetryAfter = response?.headers?.get?.("retry-after");
+function parseTelegramRetryAfterMs(
+  payload: TelegramRawPayload | string | null,
+  response: Response,
+): number | null {
+  const payloadRetryAfter =
+    typeof payload === "object" && payload !== null
+      ? payload.parameters?.retry_after
+      : undefined;
+  const headerRetryAfter = response.headers.get("retry-after");
   return parseRetryAfterMs(payloadRetryAfter) ?? parseRetryAfterMs(headerRetryAfter);
 }
 
-async function fetchWithTimeout(url, options, timeoutMs) {
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort();
@@ -104,44 +189,65 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-async function readTelegramPayload(response) {
+async function readTelegramPayload(response: Response): Promise<{
+  responseText: string;
+  responsePayload: TelegramRawPayload | string | null;
+}> {
   const responseText = await response.text();
-  let responsePayload = responseText;
+  let responsePayload: TelegramRawPayload | string | null = responseText;
   try {
-    responsePayload = responseText ? JSON.parse(responseText) : null;
-  } catch (_error) {
+    responsePayload = responseText ? (JSON.parse(responseText) as TelegramRawPayload) : null;
+  } catch {
     // Keep raw text as fallback payload.
   }
 
-  return {
-    responseText,
-    responsePayload,
-  };
+  return { responseText, responsePayload };
 }
 
-function ensureRuntimeApis() {
-  if (typeof fetch !== "function" || typeof FormData !== "function" || typeof Blob !== "function") {
+function ensureRuntimeApis(): void {
+  if (
+    typeof fetch !== "function" ||
+    typeof FormData !== "function" ||
+    typeof Blob !== "function"
+  ) {
     throw new Error("Global fetch/FormData/Blob are unavailable. Use Node.js 18+.");
   }
 }
 
-function formatDisplayFlag(flag) {
+function formatDisplayFlag(flag: unknown): string {
   const normalized = String(flag ?? "").trim();
   if (normalized) {
     return `📌 ${normalized}`;
   }
-
   return "";
 }
 
-function buildCaption({ orderId, fileNames, flags, warnings, qrUrl }) {
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+// ---------------------------------------------------------------------------
+// Core caption builder
+// ---------------------------------------------------------------------------
+
+export function buildCaption({
+  orderId,
+  fileNames,
+  flags,
+  warnings,
+  qrUrl,
+}: BuildCaptionParams): string {
   const normalizedWarnings = Array.isArray(warnings)
     ? warnings.map((item) => String(item ?? "").trim()).filter(Boolean)
     : [];
   const normalizedFlags = Array.isArray(flags)
     ? flags.map((item) => formatDisplayFlag(item)).filter(Boolean)
     : [];
-  const lines = [];
+  const lines: string[] = [];
 
   if (normalizedWarnings.length > 0) {
     lines.push("Попередження:", ...normalizedWarnings, "", `Замовлення ${orderId}`);
@@ -170,43 +276,46 @@ function buildCaption({ orderId, fileNames, flags, warnings, qrUrl }) {
   return `${caption.slice(0, MAX_CAPTION_LENGTH - 3)}...`;
 }
 
-function chunkArray(items, chunkSize) {
-  const chunks = [];
-  for (let index = 0; index < items.length; index += chunkSize) {
-    chunks.push(items.slice(index, index + chunkSize));
-  }
-  return chunks;
-}
+// ---------------------------------------------------------------------------
+// HTTP request layer
+// ---------------------------------------------------------------------------
 
 async function sendTelegramRequest({
   botToken,
   methodName,
   buildForm,
   requestOptions,
-}) {
+}: {
+  botToken: string;
+  methodName: string;
+  buildForm: () => Promise<FormData>;
+  requestOptions?: RequestOptions;
+}): Promise<unknown> {
   ensureRuntimeApis();
   ensureValue(botToken, "TELEGRAM_BOT_TOKEN");
 
   const normalizedOptions = normalizeRequestOptions(requestOptions);
   const maxAttempts = normalizedOptions.retries + 1;
   const endpoint = `${TELEGRAM_API_BASE}/bot${botToken}/${methodName}`;
-  let lastError = null;
+  let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const form = await buildForm();
       const response = await fetchWithTimeout(
         endpoint,
-        {
-          method: "POST",
-          body: form,
-        },
+        { method: "POST", body: form },
         normalizedOptions.timeoutMs,
       );
 
       const { responsePayload } = await readTelegramPayload(response);
-      if (response.ok && responsePayload?.ok) {
-        return responsePayload.result ?? null;
+      if (
+        response.ok &&
+        typeof responsePayload === "object" &&
+        responsePayload !== null &&
+        (responsePayload as TelegramRawPayload).ok
+      ) {
+        return (responsePayload as TelegramRawPayload).result ?? null;
       }
 
       const reason =
@@ -236,14 +345,21 @@ async function sendTelegramRequest({
   throw lastError ?? new Error(`Telegram ${methodName} request failed.`);
 }
 
-async function downloadPhotoForUpload(photoUrl, requestOptions) {
+async function downloadPhotoForUpload(
+  photoUrl: string,
+  requestOptions?: RequestOptions,
+): Promise<{ bytes: Buffer; contentType: string }> {
   const normalizedOptions = normalizeRequestOptions(requestOptions);
   const maxAttempts = normalizedOptions.retries + 1;
-  let lastError = null;
+  let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const response = await fetchWithTimeout(photoUrl, { method: "GET" }, normalizedOptions.timeoutMs);
+      const response = await fetchWithTimeout(
+        photoUrl,
+        { method: "GET" },
+        normalizedOptions.timeoutMs,
+      );
       if (!response.ok) {
         if (attempt < maxAttempts && isRetryableStatusCode(response.status)) {
           const delayMs = computeBackoffDelayMs(attempt, normalizedOptions.retryBaseMs);
@@ -253,12 +369,9 @@ async function downloadPhotoForUpload(photoUrl, requestOptions) {
         throw new Error(`Preview image download failed (${response.status})`);
       }
 
-      const contentType = response.headers.get("content-type") || "image/jpeg";
+      const contentType = response.headers.get("content-type") ?? "image/jpeg";
       const bytes = Buffer.from(await response.arrayBuffer());
-      return {
-        bytes,
-        contentType,
-      };
+      return { bytes, contentType };
     } catch (error) {
       lastError = error;
       if (attempt >= maxAttempts || !isRetryableFetchError(error)) {
@@ -272,6 +385,10 @@ async function downloadPhotoForUpload(photoUrl, requestOptions) {
   throw lastError ?? new Error("Preview image download failed.");
 }
 
+// ---------------------------------------------------------------------------
+// Media sending functions
+// ---------------------------------------------------------------------------
+
 async function sendMediaGroup({
   botToken,
   chatId,
@@ -279,7 +396,14 @@ async function sendMediaGroup({
   files,
   caption,
   requestOptions,
-}) {
+}: {
+  botToken: string;
+  chatId: string;
+  messageThreadId?: string;
+  files: TelegramFile[];
+  caption: string;
+  requestOptions?: RequestOptions;
+}): Promise<TelegramMessage[]> {
   ensureValue(chatId, "TELEGRAM_CHAT_ID");
 
   if (!Array.isArray(files) || files.length === 0) {
@@ -303,11 +427,12 @@ async function sendMediaGroup({
         form.append("message_thread_id", String(messageThreadId));
       }
 
-      const media = [];
+      const media: Array<{ type: string; media: string; caption?: string }> = [];
       for (let index = 0; index < files.length; index += 1) {
-        const file = files[index];
+        const file = files[index]!;
+        const fileBuffer = fileBuffers[index]!;
         const attachName = `file${index + 1}`;
-        const blob = new Blob([fileBuffers[index]], { type: "application/pdf" });
+        const blob = new Blob([fileBuffer], { type: "application/pdf" });
 
         form.append(attachName, blob, file.filename);
         media.push({
@@ -322,7 +447,7 @@ async function sendMediaGroup({
     },
   });
 
-  return Array.isArray(result) ? result : [];
+  return Array.isArray(result) ? (result as TelegramMessage[]) : [];
 }
 
 async function sendSingleDocument({
@@ -332,7 +457,14 @@ async function sendSingleDocument({
   file,
   caption,
   requestOptions,
-}) {
+}: {
+  botToken: string;
+  chatId: string;
+  messageThreadId?: string;
+  file: TelegramFile;
+  caption: string;
+  requestOptions?: RequestOptions;
+}): Promise<TelegramMessage[]> {
   ensureValue(chatId, "TELEGRAM_CHAT_ID");
 
   const buffer = await fsp.readFile(file.path);
@@ -352,7 +484,7 @@ async function sendSingleDocument({
     },
   });
 
-  return result ? [result] : [];
+  return result ? [result as TelegramMessage] : [];
 }
 
 async function sendPhotoByUrl({
@@ -362,7 +494,14 @@ async function sendPhotoByUrl({
   photoUrl,
   caption,
   requestOptions,
-}) {
+}: {
+  botToken: string;
+  chatId: string;
+  messageThreadId?: string;
+  photoUrl: string;
+  caption?: string;
+  requestOptions?: RequestOptions;
+}): Promise<TelegramMessage> {
   ensureValue(chatId, "TELEGRAM_CHAT_ID");
   ensureValue(photoUrl, "preview image URL");
 
@@ -382,7 +521,7 @@ async function sendPhotoByUrl({
       form.append("photo", photoUrl);
       return form;
     },
-  });
+  }) as Promise<TelegramMessage>;
 }
 
 async function sendPhotoByUpload({
@@ -392,17 +531,23 @@ async function sendPhotoByUpload({
   photoUrl,
   caption,
   requestOptions,
-}) {
+}: {
+  botToken: string;
+  chatId: string;
+  messageThreadId?: string;
+  photoUrl: string;
+  caption?: string;
+  requestOptions?: RequestOptions;
+}): Promise<TelegramMessage> {
   ensureValue(chatId, "TELEGRAM_CHAT_ID");
   ensureValue(photoUrl, "preview image URL");
 
   const source = await downloadPhotoForUpload(photoUrl, requestOptions);
-  const extension =
-    source.contentType.includes("png")
-      ? "png"
-      : source.contentType.includes("webp")
-        ? "webp"
-        : "jpg";
+  const extension = source.contentType.includes("png")
+    ? "png"
+    : source.contentType.includes("webp")
+      ? "webp"
+      : "jpg";
 
   return sendTelegramRequest({
     botToken,
@@ -419,12 +564,12 @@ async function sendPhotoByUpload({
       }
       form.append(
         "photo",
-        new Blob([source.bytes], { type: source.contentType }),
+        new Blob([new Uint8Array(source.bytes)], { type: source.contentType }),
         `preview.${extension}`,
       );
       return form;
     },
-  });
+  }) as Promise<TelegramMessage>;
 }
 
 async function sendSinglePreviewPhoto({
@@ -434,7 +579,14 @@ async function sendSinglePreviewPhoto({
   photoUrl,
   caption,
   requestOptions,
-}) {
+}: {
+  botToken: string;
+  chatId: string;
+  messageThreadId?: string;
+  photoUrl: string;
+  caption?: string;
+  requestOptions?: RequestOptions;
+}): Promise<TelegramMessage> {
   try {
     return await sendPhotoByUrl({
       botToken,
@@ -444,7 +596,7 @@ async function sendSinglePreviewPhoto({
       caption,
       requestOptions,
     });
-  } catch (_urlError) {
+  } catch {
     return sendPhotoByUpload({
       botToken,
       chatId,
@@ -463,17 +615,21 @@ async function sendPreviewPhotos({
   orderId,
   previewImages,
   requestOptions,
-}) {
+}: {
+  botToken: string;
+  chatId: string;
+  messageThreadId?: string;
+  orderId: string;
+  previewImages: string[];
+  requestOptions?: RequestOptions;
+}): Promise<{ messages: TelegramMessage[]; errors: string[] }> {
   const urls = Array.isArray(previewImages) ? previewImages.filter(Boolean) : [];
   if (urls.length === 0) {
-    return {
-      messages: [],
-      errors: [],
-    };
+    return { messages: [], errors: [] };
   }
 
-  const messages = [];
-  const errors = [];
+  const messages: TelegramMessage[] = [];
+  const errors: string[] = [];
   for (let index = 0; index < urls.length; index += 1) {
     const caption = index === 0 ? `Замовлення ${orderId}\nПрев'ю макету` : undefined;
     try {
@@ -481,7 +637,7 @@ async function sendPreviewPhotos({
         botToken,
         chatId,
         messageThreadId,
-        photoUrl: urls[index],
+        photoUrl: urls[index]!,
         caption,
         requestOptions,
       });
@@ -493,10 +649,7 @@ async function sendPreviewPhotos({
     }
   }
 
-  return {
-    messages,
-    errors,
-  };
+  return { messages, errors };
 }
 
 async function sendGeneratedFiles({
@@ -507,7 +660,15 @@ async function sendGeneratedFiles({
   generatedFiles,
   caption,
   requestOptions,
-}) {
+}: {
+  botToken: string;
+  chatId: string;
+  messageThreadId?: string;
+  orderId: string;
+  generatedFiles: TelegramFile[];
+  caption: string;
+  requestOptions?: RequestOptions;
+}): Promise<TelegramMessage[]> {
   if (!Array.isArray(generatedFiles) || generatedFiles.length === 0) {
     return [];
   }
@@ -517,22 +678,22 @@ async function sendGeneratedFiles({
       botToken,
       chatId,
       messageThreadId,
-      file: generatedFiles[0],
+      file: generatedFiles[0]!,
       caption,
       requestOptions,
     });
   }
 
   const chunks = chunkArray(generatedFiles, MAX_MEDIA_GROUP_SIZE);
-  const messages = [];
+  const messages: TelegramMessage[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
-    const chunk = chunks[index];
+    const chunk = chunks[index]!;
     if (chunk.length === 1) {
       const singleMessages = await sendSingleDocument({
         botToken,
         chatId,
         messageThreadId,
-        file: chunk[0],
+        file: chunk[0]!,
         caption: index === 0 ? caption : `Замовлення ${orderId} (продовження)`,
         requestOptions,
       });
@@ -554,7 +715,11 @@ async function sendGeneratedFiles({
   return messages;
 }
 
-async function sendOrderFilesToTelegram({
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export async function sendOrderFilesToTelegram({
   botToken,
   chatId,
   messageThreadId,
@@ -565,7 +730,7 @@ async function sendOrderFilesToTelegram({
   previewImages,
   generatedFiles,
   requestOptions = {},
-}) {
+}: SendOrderFilesInput): Promise<SendOrderFilesResult> {
   ensureValue(botToken, "TELEGRAM_BOT_TOKEN");
   ensureValue(chatId, "TELEGRAM_CHAT_ID");
 
@@ -579,7 +744,9 @@ async function sendOrderFilesToTelegram({
     requestOptions,
   });
   const previewMessages = previewResult.messages;
-  const previewWarnings = previewResult.errors.map((message) => `⚠️ Preview warning: ${message}`);
+  const previewWarnings = previewResult.errors.map(
+    (message) => `⚠️ Preview warning: ${message}`,
+  );
   const caption = buildCaption({
     orderId,
     fileNames,
@@ -602,7 +769,7 @@ async function sendOrderFilesToTelegram({
 
   return {
     chat_id: chatId,
-    message_thread_id: messageThreadId || null,
+    message_thread_id: messageThreadId ?? null,
     preview_count: previewMessages.length,
     preview_message_ids: previewMessages.map((message) => message.message_id),
     preview_errors: previewResult.errors,
@@ -611,8 +778,3 @@ async function sendOrderFilesToTelegram({
     caption,
   };
 }
-
-module.exports = {
-  buildCaption,
-  sendOrderFilesToTelegram,
-};
