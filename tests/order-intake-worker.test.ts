@@ -21,16 +21,25 @@ function baseJobPayload() {
   };
 }
 
+function opsAlertService() {
+  return {
+    send: async () => ({ sent: true, deduplicated: false }),
+  };
+}
+
 test("order worker skips when webhook status is not materials", async () => {
   let getOrderCalled = false;
   const worker = createOrderIntakeWorker({
     logger: logger(),
     materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: opsAlertService(),
     crmClient: {
       getOrder: async () => {
         getOrderCalled = true;
         return { id: 1 };
       },
+      updateOrderStatus: async () => ({ id: 1 }),
     },
     layoutPlanBuilder: {
       build: () => {
@@ -74,8 +83,11 @@ test("order worker throws typed pdf_generation error", async () => {
   const worker = createOrderIntakeWorker({
     logger: logger(),
     materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: opsAlertService(),
     crmClient: {
       getOrder: async () => ({ id: 123, status_id: 20, products: [] }),
+      updateOrderStatus: async () => ({ id: 123, status_id: 20, products: [] }),
     },
     layoutPlanBuilder: {
       build: () => ({
@@ -133,8 +145,11 @@ test("order worker throws typed telegram_delivery error", async () => {
   const worker = createOrderIntakeWorker({
     logger: logger(),
     materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: opsAlertService(),
     crmClient: {
       getOrder: async () => ({ id: 123, status_id: 20, products: [] }),
+      updateOrderStatus: async () => ({ id: 123, status_id: 20, products: [] }),
     },
     layoutPlanBuilder: {
       build: () => ({
@@ -198,8 +213,11 @@ test("order worker wraps telegram message-map failures as telegram_delivery erro
   const worker = createOrderIntakeWorker({
     logger: logger(),
     materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: opsAlertService(),
     crmClient: {
       getOrder: async () => ({ id: 123, status_id: 20, products: [] }),
+      updateOrderStatus: async () => ({ id: 123, status_id: 20, products: [] }),
     },
     layoutPlanBuilder: {
       build: () => ({
@@ -273,8 +291,11 @@ test("order worker fails when telegram delivery returns zero mapped message ids"
   const worker = createOrderIntakeWorker({
     logger: logger(),
     materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: opsAlertService(),
     crmClient: {
       getOrder: async () => ({ id: 123, status_id: 20, products: [] }),
+      updateOrderStatus: async () => ({ id: 123, status_id: 20, products: [] }),
     },
     layoutPlanBuilder: {
       build: () => ({
@@ -350,8 +371,11 @@ test("order worker forwards PDF warnings into telegram delivery payload", async 
   const worker = createOrderIntakeWorker({
     logger: logger(),
     materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: opsAlertService(),
     crmClient: {
       getOrder: async () => ({ id: 123, status_id: 20, products: [] }),
+      updateOrderStatus: async () => ({ id: 123, status_id: 20, products: [] }),
     },
     layoutPlanBuilder: {
       build: () => ({
@@ -440,8 +464,11 @@ test("order worker hides QR url in caption payload when QR was not embedded", as
   const worker = createOrderIntakeWorker({
     logger: logger(),
     materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: opsAlertService(),
     crmClient: {
       getOrder: async () => ({ id: 123, status_id: 20, products: [] }),
+      updateOrderStatus: async () => ({ id: 123, status_id: 20, products: [] }),
     },
     layoutPlanBuilder: {
       build: () => ({
@@ -521,4 +548,209 @@ test("order worker hides QR url in caption payload when QR was not embedded", as
   });
 
   assert.equal(receivedQrUrl, "null");
+});
+
+test("order worker moves order to missing file and alerts ops when poster source is missing", async () => {
+  let pdfCalled = false;
+  let telegramCalled = false;
+  let updatedStatusId: number | null = null;
+  const sentAlerts: Array<{ title: string; details?: string; orderId?: string }> = [];
+
+  const worker = createOrderIntakeWorker({
+    logger: logger(),
+    materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: {
+      send: async (params) => {
+        sentAlerts.push({
+          title: params.title,
+          details: params.details,
+          orderId: params.orderId,
+        });
+        return { sent: true, deduplicated: false };
+      },
+    },
+    crmClient: {
+      getOrder: async () => ({ id: 28297, status_id: 20, products: [] }),
+      updateOrderStatus: async (_orderId: string, statusId: number) => {
+        updatedStatusId = statusId;
+        return { id: 28297, status_id: statusId, products: [] };
+      },
+    },
+    layoutPlanBuilder: {
+      build: () => ({
+        orderNumber: "28297",
+        urgent: false,
+        flags: [],
+        notes: [
+          '🚨 Для "PhotoPosterA5Wood" відсутній друкарський файл (_tib_design_link_1). Preview не використовується як source для друку.',
+        ],
+        previewImages: [],
+        qr: {
+          requested: false,
+          valid: false,
+          shouldGenerate: false,
+          originalUrl: null,
+          url: null,
+        },
+        materials: [
+          {
+            type: "poster",
+            code: "AA5",
+            index: 1,
+            total: 1,
+            filename: "CGU_AA5_28297_1_1",
+            productId: 10,
+            sku: "PhotoPosterA5Wood",
+            sourceUrl: null,
+            text: null,
+            format: "A5",
+            standType: null,
+          },
+        ],
+      }),
+    } as never,
+    pdfPipelineService: {
+      generateForOrder: async () => {
+        pdfCalled = true;
+        throw new Error("must not run");
+      },
+    } as never,
+    telegramDeliveryService: {
+      sendOrderMaterials: async () => {
+        telegramCalled = true;
+        throw new Error("must not run");
+      },
+    } as never,
+    telegramMessageMapStore: {
+      linkMessages: async () => ({ linked: 0 }),
+    } as never,
+  });
+
+  await worker({
+    id: "j8",
+    key: "k8",
+    status: "queued",
+    attempt: 1,
+    maxAttempts: 3,
+    createdAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+    payload: {
+      ...baseJobPayload(),
+      orderId: "28297",
+    },
+  });
+
+  assert.equal(updatedStatusId, 40);
+  assert.equal(pdfCalled, false);
+  assert.equal(telegramCalled, false);
+  assert.equal(sentAlerts.length, 1);
+  assert.equal(sentAlerts[0]?.title, 'Замовлення переведено в "Без файлу"');
+  assert.equal(sentAlerts[0]?.orderId, "28297");
+  assert.match(
+    sentAlerts[0]?.details ?? "",
+    /відсутній друкарський source PDF/i,
+  );
+});
+
+test("order worker moves order to missing file and alerts ops when engraving or sticker text is missing", async () => {
+  let pdfCalled = false;
+  let telegramCalled = false;
+  let updatedStatusId: number | null = null;
+  const sentAlerts: Array<{ details?: string; orderId?: string }> = [];
+
+  const worker = createOrderIntakeWorker({
+    logger: logger(),
+    materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: {
+      send: async (params) => {
+        sentAlerts.push({
+          details: params.details,
+          orderId: params.orderId,
+        });
+        return { sent: true, deduplicated: false };
+      },
+    },
+    crmClient: {
+      getOrder: async () => ({ id: 903, status_id: 20, products: [] }),
+      updateOrderStatus: async (_orderId: string, statusId: number) => {
+        updatedStatusId = statusId;
+        return { id: 903, status_id: statusId, products: [] };
+      },
+    },
+    layoutPlanBuilder: {
+      build: () => ({
+        orderNumber: "903",
+        urgent: false,
+        flags: [],
+        notes: [
+          "🚨 Замовлено гравіювання, але текст відсутній. Файл CGU_A5W_G_903_2_3 не згенеровано.",
+          "🚨 Замовлено стікер, але текст відсутній. Файл CGU_S_903_3_3 не згенеровано.",
+        ],
+        previewImages: [],
+        qr: {
+          requested: false,
+          valid: false,
+          shouldGenerate: false,
+          originalUrl: null,
+          url: null,
+        },
+        materials: [
+          {
+            type: "poster",
+            code: "AA5",
+            index: 1,
+            total: 3,
+            filename: "CGU_AA5_903_1_3",
+            productId: 20,
+            sku: "PhotoPosterA5Wood",
+            sourceUrl: "https://example.com/poster.pdf",
+            text: null,
+            format: "A5",
+            standType: null,
+          },
+        ],
+      }),
+    } as never,
+    pdfPipelineService: {
+      generateForOrder: async () => {
+        pdfCalled = true;
+        throw new Error("must not run");
+      },
+    } as never,
+    telegramDeliveryService: {
+      sendOrderMaterials: async () => {
+        telegramCalled = true;
+        throw new Error("must not run");
+      },
+    } as never,
+    telegramMessageMapStore: {
+      linkMessages: async () => ({ linked: 0 }),
+    } as never,
+  });
+
+  await worker({
+    id: "j9",
+    key: "k9",
+    status: "queued",
+    attempt: 1,
+    maxAttempts: 3,
+    createdAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+    payload: {
+      ...baseJobPayload(),
+      orderId: "903",
+    },
+  });
+
+  assert.equal(updatedStatusId, 40);
+  assert.equal(pdfCalled, false);
+  assert.equal(telegramCalled, false);
+  assert.equal(sentAlerts.length, 1);
+  assert.equal(sentAlerts[0]?.orderId, "903");
+  assert.match(sentAlerts[0]?.details ?? "", /гравіювання, але текст відсутній/i);
+  assert.match(sentAlerts[0]?.details ?? "", /стікер, але текст відсутній/i);
 });

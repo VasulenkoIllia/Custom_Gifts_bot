@@ -6,6 +6,7 @@ import {
   resolveRetryableError,
 } from "../modules/errors/worker-errors";
 import type { LayoutPlanBuilder } from "../modules/layout/layout-plan-builder";
+import type { LayoutPlan } from "../modules/layout/layout.types";
 import { resolveCaptionQrUrl, type PdfPipelineService } from "../modules/pdf/pdf-pipeline.service";
 import type { OrderIntakeJobPayload } from "../modules/queue/queue-jobs";
 import type { QueueHandler } from "../modules/queue/queue.types";
@@ -14,14 +15,58 @@ import type { TelegramMessageMapStore } from "../modules/telegram/telegram-messa
 import type { Logger } from "../observability/logger";
 
 type CreateOrderIntakeWorkerParams = {
-  crmClient: Pick<CrmClient, "getOrder">;
+  crmClient: Pick<CrmClient, "getOrder" | "updateOrderStatus">;
   layoutPlanBuilder: LayoutPlanBuilder;
   pdfPipelineService: PdfPipelineService;
   telegramDeliveryService: TelegramDeliveryService;
   telegramMessageMapStore: Pick<TelegramMessageMapStore, "linkMessages">;
   materialsStatusId: number;
+  missingFileStatusId: number | null;
+  opsAlertService: {
+    send: (params: {
+      level: "warning" | "error" | "critical";
+      module: string;
+      title: string;
+      orderId?: string;
+      details?: string;
+      dedupeKey?: string;
+    }) => Promise<{ sent: boolean; deduplicated: boolean }>;
+  };
   logger: Logger;
 };
+
+const MISSING_ENGRAVING_TEXT_PREFIX = "🚨 Замовлено гравіювання, але текст відсутній.";
+const MISSING_STICKER_TEXT_PREFIX = "🚨 Замовлено стікер, але текст відсутній.";
+
+function collectImmediateMissingFileReasons(layoutPlan: LayoutPlan): string[] {
+  const reasons = new Set<string>();
+
+  for (const material of layoutPlan.materials) {
+    if (material.type === "poster" && !String(material.sourceUrl ?? "").trim()) {
+      reasons.add(
+        `Для файлу ${material.filename}.pdf відсутній друкарський source PDF (_tib_design_link_1).`,
+      );
+    }
+  }
+
+  for (const note of layoutPlan.notes ?? []) {
+    const normalized = String(note ?? "").trim();
+    if (!normalized) {
+      continue;
+    }
+
+    if (normalized.startsWith(MISSING_ENGRAVING_TEXT_PREFIX)) {
+      reasons.add("Замовлено гравіювання, але текст відсутній.");
+      continue;
+    }
+
+    if (normalized.startsWith(MISSING_STICKER_TEXT_PREFIX)) {
+      reasons.add("Замовлено стікер, але текст відсутній.");
+    }
+  }
+
+  return Array.from(reasons);
+}
 
 function normalizeStatusId(value: unknown): number | null {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -38,6 +83,8 @@ export function createOrderIntakeWorker({
   telegramDeliveryService,
   telegramMessageMapStore,
   materialsStatusId,
+  missingFileStatusId,
+  opsAlertService,
   logger,
 }: CreateOrderIntakeWorkerParams): QueueHandler<OrderIntakeJobPayload> {
   return async (job) => {
@@ -66,9 +113,10 @@ export function createOrderIntakeWorker({
 
     const layoutPlan = layoutPlanBuilder.build(order);
     const productCount = Array.isArray(order.products) ? order.products.length : 0;
+    const orderId = String(order.id);
 
     logger.info("order_intake_processed", {
-      orderId: String(order.id),
+      orderId,
       productCount,
       statusId: order.status_id ?? job.payload.statusId,
       sourceUuid: job.payload.sourceUuid,
@@ -79,7 +127,47 @@ export function createOrderIntakeWorker({
       urgent: layoutPlan.urgent,
     });
 
-    const orderId = String(order.id);
+    const immediateMissingFileReasons = collectImmediateMissingFileReasons(layoutPlan);
+    if (immediateMissingFileReasons.length > 0) {
+      logger.warn("order_intake_missing_file_detected", {
+        orderId,
+        reasons: immediateMissingFileReasons,
+        jobId: job.id,
+      });
+
+      if (missingFileStatusId) {
+        try {
+          await crmClient.updateOrderStatus(orderId, missingFileStatusId);
+        } catch (error) {
+          logger.error("order_intake_missing_file_status_update_failed", {
+            orderId,
+            statusId: missingFileStatusId,
+            message: error instanceof Error ? error.message : String(error),
+            jobId: job.id,
+          });
+        }
+      }
+
+      try {
+        await opsAlertService.send({
+          level: "error",
+          module: "order_intake",
+          title: 'Замовлення переведено в "Без файлу"',
+          orderId,
+          details: immediateMissingFileReasons.join("\n"),
+          dedupeKey: `missing_file:${orderId}`,
+        });
+      } catch (error) {
+        logger.error("order_intake_missing_file_alert_failed", {
+          orderId,
+          message: error instanceof Error ? error.message : String(error),
+          jobId: job.id,
+        });
+      }
+
+      return;
+    }
+
     let pdfResult;
     try {
       pdfResult = await pdfPipelineService.generateForOrder({

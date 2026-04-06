@@ -3,6 +3,7 @@
 TypeScript-сервіс для повного циклу обробки замовлень із `KeyCRM`:
 - прийом webhook подій;
 - побудова layout plan;
+- рання валідація кейсів `Без файлу`;
 - генерація PDF-матеріалів;
 - відправка комплекту в Telegram topic `ОБРОБКА`;
 - реакційний workflow через `❤️`;
@@ -31,7 +32,8 @@ TypeScript-сервіс для повного циклу обробки замо
 - операційний state зберігається в PostgreSQL
 - routing і reaction rules bootstrap-яться з env/json, але працюють через БД
 - PDF/temp файли зберігаються локально тимчасово і чистяться retention-політикою
-- помилки типізуються і відправляються в retry / DLQ
+- deterministic missing-file кейси (`немає _tib_design_link_1`, `немає тексту для engraving/sticker`) відсікаються до PDF pipeline
+- решта технічних помилок типізуються і відправляються в retry / DLQ
 
 ## Стек
 

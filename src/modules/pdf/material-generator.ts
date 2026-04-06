@@ -2584,17 +2584,6 @@ export async function generateMaterialFiles(
     missingWarned: new Set(),
   };
 
-  if (emojiRuntime.mode === "apple_image") {
-    if (emojiRuntime.assetsDir && !fs.existsSync(emojiRuntime.assetsDir)) {
-      warnings.push(`Директорія Apple emoji не знайдена: ${emojiRuntime.assetsDir}`);
-    }
-    if (!emojiRuntime.assetsDir && !emojiRuntime.baseUrl) {
-      warnings.push(
-        "Apple emoji mode увімкнено, але не задано APPLE_EMOJI_BASE_URL або APPLE_EMOJI_ASSETS_DIR.",
-      );
-    }
-  }
-
   // Cleanup old standalone QR artifact from previous logic versions.
   try {
     await fsp.unlink(path.join(orderOutputDir, "QR.pdf"));
@@ -2631,7 +2620,9 @@ export async function generateMaterialFiles(
     );
     if (hasEmojiInText) {
       if (emojiRuntime.mode === "apple_image") {
-        if (!emojiRuntime.assetsDir && !emojiRuntime.baseUrl) {
+        if (emojiRuntime.assetsDir && !fs.existsSync(emojiRuntime.assetsDir)) {
+          warnings.push(`Директорія Apple emoji не знайдена: ${emojiRuntime.assetsDir}`);
+        } else if (!emojiRuntime.assetsDir && !emojiRuntime.baseUrl) {
           warnings.push(
             "У тексті є emoji, але для apple_image mode не задано джерело emoji PNG.",
           );

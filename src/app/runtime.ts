@@ -257,6 +257,8 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
       telegramDeliveryService,
       telegramMessageMapStore,
       materialsStatusId: reactionStatusRules.materialsStatusId,
+      missingFileStatusId: reactionStatusRules.missingFileStatusId,
+      opsAlertService,
       logger,
     }),
     onStateChange: (event) => {

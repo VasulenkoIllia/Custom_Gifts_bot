@@ -6,6 +6,7 @@
 - persistent DLQ (PostgreSQL table `dead_letters`);
 - ops-alert повідомлення в окремий Telegram чат (`TELEGRAM_OPS_CHAT_ID`);
 - failure-status flow:
+  - deterministic `missing file` до PDF pipeline -> `missingFileStatusId` без retry / DLQ;
   - `pdf_generation` -> `missingFileStatusId`;
   - `telegram_delivery` -> `missingTelegramStatusId`;
 - storage retention cleanup для `OUTPUT_DIR` і `TEMP_DIR`.
@@ -66,14 +67,28 @@
   - retry на rate limit і transient network errors.
 - PDF generation
   - обережний retry тільки на transient помилках;
-  - на deterministic помилках одразу alert і DLQ.
+  - на deterministic missing-file кейсах PDF взагалі не стартує.
 
 ## 5. Що вважати deterministic помилкою
 - відсутній source PDF
+- замовлено engraving/sticker, але текст відсутній
 - битий source URL
 - відсутній потрібний mapping SKU
 - конфігурація placement поза межами сторінки
 - відсутній обов'язковий файл шрифту
+
+## 5.1 Deterministic missing-file path
+Для таких кейсів:
+- відсутній `_tib_design_link_1`;
+- замовлено engraving, але текст відсутній;
+- замовлено sticker, але текст відсутній;
+
+система робить так:
+- не запускає PDF pipeline;
+- не робить retry;
+- не створює запис у `dead_letters`;
+- одразу ставить CRM статус `Без файлу` (`40`);
+- відправляє `error` alert у Telegram ops chat.
 
 ## 6. Що вважати transient помилкою
 - timeout CRM

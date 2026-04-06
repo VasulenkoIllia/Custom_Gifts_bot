@@ -21,7 +21,7 @@ const { PNG } = require("pngjs") as {
   };
 };
 
-const materialGeneratorRuntime = require("../src/modules/pdf/material-generator.runtime.js") as {
+const materialGeneratorRuntime = require("../src/modules/pdf/material-generator.js") as {
   generateMaterialFiles: (input: {
     layoutPlan: {
       order_number: string;
@@ -69,6 +69,7 @@ const materialGeneratorRuntime = require("../src/modules/pdf/material-generator.
       retryBaseMs: number;
     };
   }) => Promise<{
+    warnings: string[];
     generated: Array<{
       path: string;
       details: Record<string, unknown>;
@@ -201,6 +202,10 @@ async function createTransparentPosterDataUrl(): Promise<string> {
   return `data:application/pdf;base64,${pdfBytes.toString("base64")}`;
 }
 
+async function createTempOutputRoot(prefix: string): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
 test("generateMaterialFiles preserves soft mask for posters with internal transparency", async (t) => {
   if (!hasGhostscript()) {
     t.skip("Ghostscript is not available in the test environment.");
@@ -280,4 +285,138 @@ test("generateMaterialFiles preserves soft mask for posters with internal transp
 
   const outputPdf = await fs.readFile(generated.path);
   assert.ok(outputPdf.includes(Buffer.from("/SMask")));
+});
+
+test("generateMaterialFiles does not emit apple emoji warning when text has no emoji", async (t) => {
+  const outputRoot = await createTempOutputRoot("material-generator-no-emoji-");
+  t.after(async () => {
+    await fs.rm(outputRoot, { recursive: true, force: true });
+  });
+
+  const result = await materialGeneratorRuntime.generateMaterialFiles({
+    layoutPlan: {
+      order_number: "test-no-emoji",
+      urgent: false,
+      flags: [],
+      notes: [],
+      preview_images: [],
+      qr: {
+        requested: false,
+        valid: false,
+        should_generate: false,
+        original_url: null,
+        short_url: null,
+        url: null,
+      },
+      materials: [
+        {
+          type: "sticker",
+          code: "S",
+          product_id: 1,
+          source_url: null,
+          text: "Без емодзі",
+          format: null,
+          stand_type: null,
+          index: 1,
+          total: 1,
+          filename: "TEST_S_1_1",
+        },
+      ],
+    },
+    outputRoot,
+    orderId: "test-no-emoji",
+    fontPath: path.resolve(process.cwd(), "assets/fonts/Caveat-VariableFont_wght.ttf"),
+    emojiFontPath: "",
+    emojiRenderMode: "apple_image",
+    appleEmojiBaseUrl: "",
+    appleEmojiAssetsDir: "",
+    stickerSizeMm: 100,
+    colorSpace: "RGB",
+    qrPlacementByFormat: {
+      A5: { rightMm: 10, bottomMm: 10, sizeMm: 20 },
+      A4: { rightMm: 10, bottomMm: 10, sizeMm: 30 },
+    },
+    replaceWhiteWithOffWhite: true,
+    offWhiteHex: "FFFEFA",
+    rasterizeDpi: 144,
+    sourceRequestOptions: {
+      timeoutMs: 1_000,
+      retries: 0,
+      retryBaseMs: 100,
+    },
+  });
+
+  assert.equal(
+    result.warnings.some((warning) =>
+      warning.includes("APPLE_EMOJI_BASE_URL") || warning.includes("apple_image mode"),
+    ),
+    false,
+  );
+});
+
+test("generateMaterialFiles warns about missing apple emoji source only when text contains emoji", async (t) => {
+  const outputRoot = await createTempOutputRoot("material-generator-with-emoji-");
+  t.after(async () => {
+    await fs.rm(outputRoot, { recursive: true, force: true });
+  });
+
+  const result = await materialGeneratorRuntime.generateMaterialFiles({
+    layoutPlan: {
+      order_number: "test-with-emoji",
+      urgent: false,
+      flags: [],
+      notes: [],
+      preview_images: [],
+      qr: {
+        requested: false,
+        valid: false,
+        should_generate: false,
+        original_url: null,
+        short_url: null,
+        url: null,
+      },
+      materials: [
+        {
+          type: "sticker",
+          code: "S",
+          product_id: 1,
+          source_url: null,
+          text: "Тест 🥰",
+          format: null,
+          stand_type: null,
+          index: 1,
+          total: 1,
+          filename: "TEST_S_1_1",
+        },
+      ],
+    },
+    outputRoot,
+    orderId: "test-with-emoji",
+    fontPath: path.resolve(process.cwd(), "assets/fonts/Caveat-VariableFont_wght.ttf"),
+    emojiFontPath: "",
+    emojiRenderMode: "apple_image",
+    appleEmojiBaseUrl: "",
+    appleEmojiAssetsDir: "",
+    stickerSizeMm: 100,
+    colorSpace: "RGB",
+    qrPlacementByFormat: {
+      A5: { rightMm: 10, bottomMm: 10, sizeMm: 20 },
+      A4: { rightMm: 10, bottomMm: 10, sizeMm: 30 },
+    },
+    replaceWhiteWithOffWhite: true,
+    offWhiteHex: "FFFEFA",
+    rasterizeDpi: 144,
+    sourceRequestOptions: {
+      timeoutMs: 1_000,
+      retries: 0,
+      retryBaseMs: 100,
+    },
+  });
+
+  assert.equal(
+    result.warnings.some((warning) =>
+      warning.includes("У тексті є emoji, але для apple_image mode не задано джерело emoji PNG."),
+    ),
+    true,
+  );
 });

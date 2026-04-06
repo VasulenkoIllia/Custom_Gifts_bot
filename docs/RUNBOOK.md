@@ -266,9 +266,30 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
    - primary `lnk.ua`;
    - fallback `cutt.ly`.
 7. Для read-only перевірки бізнес-логіки по фіксованих order ID використовувати [LOCAL_ORDER_BUSINESS_TESTING.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/LOCAL_ORDER_BUSINESS_TESTING.md).
+8. Для order без `_tib_design_link_1` або без тексту engraving/sticker:
+   - PDF pipeline не стартує;
+   - order одразу переходить у `Без файлу` (`40`);
+   - в ops-чат приходить `error` alert;
+   - запису в `dead_letters` бути не повинно.
 
 ## 4. Реакція на інциденти
-### 4.1 Queue/DLQ
+### 4.1 Deterministic missing-file
+Ознаки:
+- у логах `order_intake_missing_file_detected`;
+- у CRM order одразу переходить у `40`;
+- в ops-чат приходить `Замовлення переведено в "Без файлу"`;
+- запису в `dead_letters` немає.
+
+Дії:
+1. Відкрити order у CRM.
+2. Перевірити, чого саме бракує:
+   - `_tib_design_link_1`;
+   - тексту engraving;
+   - тексту sticker.
+3. Виправити дані в order/source.
+4. Повернути order у `20` і повторити intake.
+
+### 4.2 Queue/DLQ
 Ознаки:
 - у логах `queue_dead_letter_recorded`;
 - у БД з'являються записи в `dead_letters`;
@@ -280,7 +301,7 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 3. Виправити причину.
 4. Повторно відправити замовлення (через CRM повторний статус/webhook).
 
-### 4.2 Telegram недоступний / rate limit
+### 4.3 Telegram недоступний / rate limit
 Ознаки:
 - помилки `Telegram ... failed (429/5xx)`;
 - затримки доставки.
@@ -291,7 +312,7 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 2. Тимчасово зменшити `ORDER_QUEUE_CONCURRENCY`.
 3. За потреби підвищити `TELEGRAM_REQUEST_RETRIES`.
 
-### 4.3 CRM API помилки
+### 4.4 CRM API помилки
 Ознаки:
 - `CrmApiError`, `crm_retry`.
 
@@ -300,7 +321,7 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 2. Перевірити `KEYCRM_API_BASE`.
 3. Дочекатися автоматичних retry; при вичерпанні - переглянути DLQ.
 
-### 4.4 Spotify / PDF source URL помилки
+### 4.5 Spotify / PDF source URL помилки
 Ознаки:
 - `Spotify ... failed ...`;
 - `Failed to download poster PDF (...)`.
@@ -312,7 +333,7 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
    - `SPOTIFY_REQUEST_RETRIES`;
    - `PDF_SOURCE_REQUEST_RETRIES`.
 
-### 4.5 URL shortener помилки (`lnk.ua` / `cutt.ly`)
+### 4.6 URL shortener помилки (`lnk.ua` / `cutt.ly`)
 Ознаки:
 - `shortener primary failed` у логах;
 - попередження про fallback або відсутність short URL.
