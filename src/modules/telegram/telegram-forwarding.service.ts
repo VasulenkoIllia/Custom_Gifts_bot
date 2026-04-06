@@ -459,6 +459,9 @@ export class TelegramForwardingService {
         if (this.targetThreadId) {
           form.append("message_thread_id", this.targetThreadId);
         }
+        if (mode === "copy") {
+          form.append("remove_caption", "true");
+        }
 
         const response = await fetchWithTimeout(
           endpoint,
