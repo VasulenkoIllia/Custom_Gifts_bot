@@ -765,16 +765,14 @@ export async function sendOrderFilesToTelegram({
     requestOptions,
   });
 
-  const allMessages = [...previewMessages, ...sentMessages];
-
   return {
     chat_id: chatId,
     message_thread_id: messageThreadId ?? null,
     preview_count: previewMessages.length,
     preview_message_ids: previewMessages.map((message) => message.message_id),
     preview_errors: previewResult.errors,
-    message_count: allMessages.length,
-    message_ids: allMessages.map((message) => message.message_id),
+    message_count: sentMessages.length,
+    message_ids: sentMessages.map((message) => message.message_id),
     caption,
   };
 }
