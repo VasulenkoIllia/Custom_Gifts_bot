@@ -58,21 +58,27 @@
    - order без `_tib_design_link_1` або без тексту engraving/sticker;
    - PDF-повідомлення в `ОБРОБКА` не з'являються;
    - у CRM ставиться `Без файлу` (`40`);
-   - у ops-чат приходить `error` alert;
+   - у processing і ops chat приходить `error` alert;
    - запису в `dead_letters` немає.
-2. Зімітувати збій PDF після старту pipeline:
+2. Перевірити deterministic `source unavailable` без PDF/DLQ:
+   - `_tib_design_link_1` є, але CDN/TeeInBlue віддає `403/404`;
+   - PDF-повідомлення в `ОБРОБКА` не з'являються;
+   - CRM статус не змінюється;
+   - у processing і ops chat приходить `Не вдалося сформувати PDF`;
+   - запису в `dead_letters` немає.
+3. Зімітувати збій PDF після старту pipeline:
    - job потрапляє в таблицю `dead_letters`;
    - у CRM ставиться `Без файлу` (`40`);
    - у ops-чат приходить alert.
-3. Зімітувати збій Telegram delivery:
+4. Зімітувати збій Telegram delivery:
    - job у DLQ;
    - у CRM ставиться `Немає в тг` (`59`);
    - у ops-чат приходить alert.
-4. Перезапуск сервісу:
+5. Перезапуск сервісу:
    - `/health` повертає `ok`;
    - нові webhook обробляються штатно;
    - message-map/idempotency/DLQ не губляться в БД.
-5. Retention cleanup:
+6. Retention cleanup:
    - старі файли з `OUTPUT_DIR` і `TEMP_DIR` видаляються за політикою.
 
 ## 5. Webhook/Prod конфіг

@@ -7,6 +7,7 @@
 - ops-alert повідомлення в окремий Telegram чат (`TELEGRAM_OPS_CHAT_ID`);
 - failure-status flow:
   - deterministic `missing file` до PDF pipeline -> `missingFileStatusId` без retry / DLQ;
+  - deterministic `source unavailable` (`_tib_design_link_1` є, але CDN дає `403/404`) -> без retry / DLQ і без зміни CRM-статусу;
   - `pdf_generation` -> `missingFileStatusId`;
   - `telegram_delivery` -> `missingTelegramStatusId`;
 - storage retention cleanup для `OUTPUT_DIR` і `TEMP_DIR`.
@@ -72,7 +73,7 @@
 ## 5. Що вважати deterministic помилкою
 - відсутній source PDF
 - замовлено engraving/sticker, але текст відсутній
-- битий source URL
+- source URL є, але CDN/TeeInBlue повертає `403/404`
 - відсутній потрібний mapping SKU
 - конфігурація placement поза межами сторінки
 - відсутній обов'язковий файл шрифту
@@ -88,7 +89,21 @@
 - не робить retry;
 - не створює запис у `dead_letters`;
 - одразу ставить CRM статус `Без файлу` (`40`);
-- відправляє `error` alert у Telegram ops chat.
+- відправляє `error` alert у Telegram processing і ops chat.
+
+## 5.2 Deterministic source-unavailable path
+Для таких кейсів:
+- `_tib_design_link_1` у замовленні є;
+- але download друкарського PDF з CDN/TeeInBlue повертає `403` або `404`.
+
+Система робить так:
+- стартує PDF pipeline;
+- зупиняє order на першому deterministic download failure;
+- не робить retry;
+- не створює запис у `dead_letters`;
+- не змінює CRM статус;
+- не відправляє PDF у Telegram;
+- відправляє `error` alert у Telegram processing і ops chat з деталями order та source URL.
 
 ## 6. Що вважати transient помилкою
 - timeout CRM
@@ -232,9 +247,10 @@
   - у Telegram caption додається `🚨`-попередження;
   - сире `Посилання QR` не показується.
 - engraving/sticker без тексту:
-  - blank PDF не створюється;
-  - відсутній файл резервує свій індекс у `total`;
-  - у Telegram caption додається `🚨`-попередження з ім'ям файлу.
+  - order не йде далі в PDF pipeline;
+  - CRM статус переходить у `Без файлу` (`40`);
+  - у processing/ops chat приходить error alert;
+  - запису в `dead_letters` немає.
 - Shortener недоступний:
   - QR вбудовується з оригінальним посиланням;
   - у примітках має бути warning про fallback.
@@ -252,8 +268,12 @@
 ## 15.2 Hard-fail правила
 - Якщо відсутній реальний design/source file для postera:
   - preview не використовується як друкарський source;
-  - order flow завершується `pdf_generation` failure;
+  - order не йде в PDF pipeline;
   - CRM статус переходить у `Без файлу`.
+- Якщо design/source URL є, але CDN/TeeInBlue віддає `403/404`:
+  - order не йде в retry / DLQ;
+  - CRM статус не змінюється;
+  - у Telegram йде alert `Не вдалося сформувати PDF`.
 
 ## 16. Документація і підтримка
 Проєкт має жити довго, тому для кожного production-інциденту треба:

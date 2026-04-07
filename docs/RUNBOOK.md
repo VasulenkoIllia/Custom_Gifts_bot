@@ -269,7 +269,13 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 8. Для order без `_tib_design_link_1` або без тексту engraving/sticker:
    - PDF pipeline не стартує;
    - order одразу переходить у `Без файлу` (`40`);
-   - в ops-чат приходить `error` alert;
+   - в processing і ops chat приходить `error` alert;
+   - запису в `dead_letters` бути не повинно.
+9. Для order, де `_tib_design_link_1` є, але CDN/TeeInBlue віддає `403/404`:
+   - PDF pipeline зупиняється без retry;
+   - CRM статус не змінюється;
+   - PDF у `ОБРОБКА` не з'являються;
+   - в processing і ops chat приходить `Не вдалося сформувати PDF`;
    - запису в `dead_letters` бути не повинно.
 
 ## 4. Реакція на інциденти
@@ -277,7 +283,7 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 Ознаки:
 - у логах `order_intake_missing_file_detected`;
 - у CRM order одразу переходить у `40`;
-- в ops-чат приходить `Замовлення переведено в "Без файлу"`;
+- у processing і ops chat приходить alert;
 - запису в `dead_letters` немає.
 
 Дії:
@@ -288,6 +294,21 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
    - тексту sticker.
 3. Виправити дані в order/source.
 4. Повернути order у `20` і повторити intake.
+
+### 4.1.1 Deterministic source-unavailable (`403/404`)
+Ознаки:
+- у логах `order_intake_missing_file_detected`;
+- `_tib_design_link_1` у payload є;
+- download source PDF повертає `403` або `404`;
+- CRM статус не змінюється;
+- у processing і ops chat приходить `Не вдалося сформувати PDF`;
+- запису в `dead_letters` немає.
+
+Дії:
+1. Відкрити order у CRM і скопіювати `_tib_design_link_1`.
+2. Перевірити URL з production сервера.
+3. Відновити source PDF у TeeInBlue/Shopify.
+4. Повторити intake без очікування retry/DLQ.
 
 ### 4.2 Queue/DLQ
 Ознаки:
@@ -332,6 +353,10 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 3. За потреби тимчасово підвищити:
    - `SPOTIFY_REQUEST_RETRIES`;
    - `PDF_SOURCE_REQUEST_RETRIES`.
+4. Якщо poster source повертає `403/404`, це deterministic кейс:
+   - retry не буде;
+   - DLQ не буде;
+   - треба виправляти source URL/доступність файлу, а не чекати автоматичного recovery.
 
 ### 4.6 URL shortener помилки (`lnk.ua` / `cutt.ly`)
 Ознаки:

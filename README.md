@@ -32,7 +32,10 @@ TypeScript-сервіс для повного циклу обробки замо
 - операційний state зберігається в PostgreSQL
 - routing і reaction rules bootstrap-яться з env/json, але працюють через БД
 - PDF/temp файли зберігаються локально тимчасово і чистяться retention-політикою
-- deterministic missing-file кейси (`немає _tib_design_link_1`, `немає тексту для engraving/sticker`) відсікаються до PDF pipeline
+- deterministic кейси відсікаються до або під час старту PDF pipeline:
+  - `немає _tib_design_link_1` -> CRM `40 / Без файлу`
+  - `немає тексту для engraving/sticker` -> CRM `40 / Без файлу`
+  - `_tib_design_link_1` є, але CDN дає `403/404` -> CRM статус не змінюється, у Telegram іде alert `Не вдалося сформувати PDF`
 - решта технічних помилок типізуються і відправляються в retry / DLQ
 
 ## Стек
