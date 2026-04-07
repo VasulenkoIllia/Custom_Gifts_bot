@@ -787,7 +787,7 @@ test("order worker moves order to missing file and alerts ops when engraving or 
   assert.match(sentProcessingAlerts[0]?.details ?? "", /стікер, але текст відсутній/i);
 });
 
-test("order worker moves deterministic CDN 403 poster download failures to missing file without retry", async () => {
+test("order worker reports deterministic CDN 403 poster download failures without retry or CRM status change", async () => {
   let updatedStatusId: number | null = null;
   let telegramCalled = false;
   let linkedCalled = false;
@@ -902,12 +902,12 @@ test("order worker moves deterministic CDN 403 poster download failures to missi
     },
   });
 
-  assert.equal(updatedStatusId, 40);
+  assert.equal(updatedStatusId, null);
   assert.equal(telegramCalled, false);
   assert.equal(linkedCalled, false);
   assert.equal(sentOpsAlerts.length, 1);
   assert.equal(sentProcessingAlerts.length, 1);
-  assert.equal(sentOpsAlerts[0]?.title, 'Замовлення переведено в "Без файлу"');
+  assert.equal(sentOpsAlerts[0]?.title, "Не вдалося сформувати PDF");
   assert.equal(sentProcessingAlerts[0]?.title, "Не вдалося сформувати PDF");
   assert.equal(sentOpsAlerts[0]?.orderId, "29459");
   assert.equal(sentProcessingAlerts[0]?.orderId, "29459");

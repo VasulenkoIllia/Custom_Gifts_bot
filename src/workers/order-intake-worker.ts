@@ -176,6 +176,8 @@ export function createOrderIntakeWorker({
     reasons: string[];
     layoutPlan: LayoutPlan;
     jobId: string;
+    updateCrmStatus?: boolean;
+    opsTitle?: string;
   }): Promise<void> => {
     logger.warn("order_intake_missing_file_detected", {
       orderId: params.orderId,
@@ -183,7 +185,7 @@ export function createOrderIntakeWorker({
       jobId: params.jobId,
     });
 
-    if (missingFileStatusId) {
+    if (params.updateCrmStatus !== false && missingFileStatusId) {
       try {
         await crmClient.updateOrderStatus(params.orderId, missingFileStatusId);
       } catch (error) {
@@ -225,7 +227,7 @@ export function createOrderIntakeWorker({
       await opsAlertService.send({
         level: "error",
         module: "order_intake",
-        title: 'Замовлення переведено в "Без файлу"',
+        title: params.opsTitle ?? 'Замовлення переведено в "Без файлу"',
         orderId: params.orderId,
         details,
         dedupeKey: `missing_file:${params.orderId}`,
@@ -320,6 +322,8 @@ export function createOrderIntakeWorker({
           reasons: deterministicDownloadFailureReasons,
           layoutPlan,
           jobId: job.id,
+          updateCrmStatus: false,
+          opsTitle: "Не вдалося сформувати PDF",
         });
         return;
       }
