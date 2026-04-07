@@ -131,6 +131,15 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     retryBaseMs: config.opsAlertRetryBaseMs,
     dedupeWindowMs: config.opsAlertDedupeWindowMs,
   });
+  const processingAlertService = new OpsAlertService({
+    botToken: config.telegramBotToken,
+    chatId: telegramRoutingConfig.destinations.processing.chatId,
+    messageThreadId: telegramRoutingConfig.destinations.processing.threadId,
+    timeoutMs: config.opsAlertTimeoutMs,
+    retries: config.opsAlertRetries,
+    retryBaseMs: config.opsAlertRetryBaseMs,
+    dedupeWindowMs: config.opsAlertDedupeWindowMs,
+  });
   const telegramMessageMapStore = new DbTelegramMessageMapStore(
     postgresClient,
     config.telegramMessageMapMaxEntries,
@@ -259,6 +268,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
       materialsStatusId: reactionStatusRules.materialsStatusId,
       missingFileStatusId: reactionStatusRules.missingFileStatusId,
       opsAlertService,
+      processingAlertService,
       logger,
     }),
     onStateChange: (event) => {

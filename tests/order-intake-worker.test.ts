@@ -555,6 +555,7 @@ test("order worker moves order to missing file and alerts ops when poster source
   let telegramCalled = false;
   let updatedStatusId: number | null = null;
   const sentAlerts: Array<{ title: string; details?: string; orderId?: string }> = [];
+  const sentProcessingAlerts: Array<{ title: string; details?: string; orderId?: string }> = [];
 
   const worker = createOrderIntakeWorker({
     logger: logger(),
@@ -563,6 +564,16 @@ test("order worker moves order to missing file and alerts ops when poster source
     opsAlertService: {
       send: async (params) => {
         sentAlerts.push({
+          title: params.title,
+          details: params.details,
+          orderId: params.orderId,
+        });
+        return { sent: true, deduplicated: false };
+      },
+    },
+    processingAlertService: {
+      send: async (params) => {
+        sentProcessingAlerts.push({
           title: params.title,
           details: params.details,
           orderId: params.orderId,
@@ -646,10 +657,17 @@ test("order worker moves order to missing file and alerts ops when poster source
   assert.equal(pdfCalled, false);
   assert.equal(telegramCalled, false);
   assert.equal(sentAlerts.length, 1);
+  assert.equal(sentProcessingAlerts.length, 1);
   assert.equal(sentAlerts[0]?.title, 'Замовлення переведено в "Без файлу"');
   assert.equal(sentAlerts[0]?.orderId, "28297");
+  assert.equal(sentProcessingAlerts[0]?.title, "Не вдалося сформувати PDF");
+  assert.equal(sentProcessingAlerts[0]?.orderId, "28297");
   assert.match(
     sentAlerts[0]?.details ?? "",
+    /відсутній друкарський source PDF/i,
+  );
+  assert.match(
+    sentProcessingAlerts[0]?.details ?? "",
     /відсутній друкарський source PDF/i,
   );
 });
@@ -659,6 +677,7 @@ test("order worker moves order to missing file and alerts ops when engraving or 
   let telegramCalled = false;
   let updatedStatusId: number | null = null;
   const sentAlerts: Array<{ details?: string; orderId?: string }> = [];
+  const sentProcessingAlerts: Array<{ details?: string; orderId?: string }> = [];
 
   const worker = createOrderIntakeWorker({
     logger: logger(),
@@ -667,6 +686,15 @@ test("order worker moves order to missing file and alerts ops when engraving or 
     opsAlertService: {
       send: async (params) => {
         sentAlerts.push({
+          details: params.details,
+          orderId: params.orderId,
+        });
+        return { sent: true, deduplicated: false };
+      },
+    },
+    processingAlertService: {
+      send: async (params) => {
+        sentProcessingAlerts.push({
           details: params.details,
           orderId: params.orderId,
         });
@@ -750,7 +778,141 @@ test("order worker moves order to missing file and alerts ops when engraving or 
   assert.equal(pdfCalled, false);
   assert.equal(telegramCalled, false);
   assert.equal(sentAlerts.length, 1);
+  assert.equal(sentProcessingAlerts.length, 1);
   assert.equal(sentAlerts[0]?.orderId, "903");
   assert.match(sentAlerts[0]?.details ?? "", /гравіювання, але текст відсутній/i);
   assert.match(sentAlerts[0]?.details ?? "", /стікер, але текст відсутній/i);
+  assert.equal(sentProcessingAlerts[0]?.orderId, "903");
+  assert.match(sentProcessingAlerts[0]?.details ?? "", /гравіювання, але текст відсутній/i);
+  assert.match(sentProcessingAlerts[0]?.details ?? "", /стікер, але текст відсутній/i);
+});
+
+test("order worker moves deterministic CDN 403 poster download failures to missing file without retry", async () => {
+  let updatedStatusId: number | null = null;
+  let telegramCalled = false;
+  let linkedCalled = false;
+  const sentOpsAlerts: Array<{ title?: string; details?: string; orderId?: string }> = [];
+  const sentProcessingAlerts: Array<{ title?: string; details?: string; orderId?: string }> = [];
+
+  const worker = createOrderIntakeWorker({
+    logger: logger(),
+    materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: {
+      send: async (params) => {
+        sentOpsAlerts.push({
+          title: params.title,
+          details: params.details,
+          orderId: params.orderId,
+        });
+        return { sent: true, deduplicated: false };
+      },
+    },
+    processingAlertService: {
+      send: async (params) => {
+        sentProcessingAlerts.push({
+          title: params.title,
+          details: params.details,
+          orderId: params.orderId,
+        });
+        return { sent: true, deduplicated: false };
+      },
+    },
+    crmClient: {
+      getOrder: async () => ({ id: 29459, status_id: 20, products: [] }),
+      updateOrderStatus: async (_orderId: string, statusId: number) => {
+        updatedStatusId = statusId;
+        return { id: 29459, status_id: statusId, products: [] };
+      },
+    },
+    layoutPlanBuilder: {
+      build: () => ({
+        orderNumber: "29459",
+        urgent: false,
+        flags: [],
+        notes: [],
+        previewImages: [],
+        qr: {
+          requested: false,
+          valid: false,
+          shouldGenerate: false,
+          originalUrl: null,
+          url: null,
+        },
+        materials: [
+          {
+            type: "poster",
+            code: "AA5",
+            index: 1,
+            total: 1,
+            filename: "CGU_AA5_29459_1_1",
+            productId: 10,
+            sku: "MapSquareTA5WoodWW",
+            sourceUrl:
+              "https://cdn.teeinblue.com/designs/881e379c-7022-462d-acb9-3e20659a0f21/881e379c-7022-462d-acb9-3e20659a0f21-854199.pdf",
+            text: null,
+            format: "A5",
+            standType: null,
+          },
+        ],
+      }),
+    } as never,
+    pdfPipelineService: {
+      generateForOrder: async () => ({
+        output_dir: "/tmp",
+        color_space: "CMYK" as const,
+        warnings: [],
+        generated: [],
+        failed: [
+          {
+            type: "poster",
+            filename: "CGU_AA5_29459_1_1.pdf",
+            path: "/tmp/CGU_AA5_29459_1_1.pdf",
+            message: "Failed to download poster PDF (403).",
+          },
+        ],
+      }),
+    } as never,
+    telegramDeliveryService: {
+      sendOrderMaterials: async () => {
+        telegramCalled = true;
+        throw new Error("must not run");
+      },
+    } as never,
+    telegramMessageMapStore: {
+      linkMessages: async () => {
+        linkedCalled = true;
+        return { linked: 0 };
+      },
+    } as never,
+  });
+
+  await worker({
+    id: "j10",
+    key: "k10",
+    status: "queued",
+    attempt: 1,
+    maxAttempts: 3,
+    createdAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+    payload: {
+      ...baseJobPayload(),
+      orderId: "29459",
+    },
+  });
+
+  assert.equal(updatedStatusId, 40);
+  assert.equal(telegramCalled, false);
+  assert.equal(linkedCalled, false);
+  assert.equal(sentOpsAlerts.length, 1);
+  assert.equal(sentProcessingAlerts.length, 1);
+  assert.equal(sentOpsAlerts[0]?.title, 'Замовлення переведено в "Без файлу"');
+  assert.equal(sentProcessingAlerts[0]?.title, "Не вдалося сформувати PDF");
+  assert.equal(sentOpsAlerts[0]?.orderId, "29459");
+  assert.equal(sentProcessingAlerts[0]?.orderId, "29459");
+  assert.match(sentOpsAlerts[0]?.details ?? "", /CDN \(403\)/);
+  assert.match(sentOpsAlerts[0]?.details ?? "", /881e379c-7022-462d-acb9-3e20659a0f21-854199\.pdf/);
+  assert.match(sentProcessingAlerts[0]?.details ?? "", /PDF сформувати неможливо/i);
+  assert.match(sentProcessingAlerts[0]?.details ?? "", /CGU_AA5_29459_1_1\.pdf/);
 });

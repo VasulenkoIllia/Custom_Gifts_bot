@@ -32,6 +32,16 @@ type CreateOrderIntakeWorkerParams = {
       dedupeKey?: string;
     }) => Promise<{ sent: boolean; deduplicated: boolean }>;
   };
+  processingAlertService?: {
+    send: (params: {
+      level: "warning" | "error" | "critical";
+      module: string;
+      title: string;
+      orderId?: string;
+      details?: string;
+      dedupeKey?: string;
+    }) => Promise<{ sent: boolean; deduplicated: boolean }>;
+  } | null;
   logger: Logger;
 };
 
@@ -68,6 +78,79 @@ function collectImmediateMissingFileReasons(layoutPlan: LayoutPlan): string[] {
   return Array.from(reasons);
 }
 
+function collectDeterministicDownloadFailureReasons(params: {
+  layoutPlan: LayoutPlan;
+  failed: Array<{ filename?: string; message?: string }>;
+}): string[] {
+  const reasons = new Set<string>();
+
+  for (const failure of params.failed) {
+    const message = String(failure.message ?? "").trim();
+    const filename = String(failure.filename ?? "").trim() || "невідомий файл";
+    const statusMatch = message.match(/Failed to download poster PDF \((\d{3})\)\./i);
+    const statusCode = statusMatch?.[1] ?? "";
+
+    if (statusCode === "403" || statusCode === "404") {
+      const material = params.layoutPlan.materials.find(
+        (item) => `${item.filename}.pdf` === filename,
+      );
+      const sourceUrl = String(material?.sourceUrl ?? "").trim();
+      reasons.add(
+        sourceUrl
+          ? `Для файлу ${filename} друкарський PDF недоступний у CDN (${statusCode}): ${sourceUrl}`
+          : `Для файлу ${filename} друкарський PDF недоступний у CDN (${statusCode}).`,
+      );
+    }
+  }
+
+  return Array.from(reasons);
+}
+
+function buildMissingFileTelegramDetails(params: {
+  orderId: string;
+  layoutPlan: LayoutPlan;
+  reasons: string[];
+}): string {
+  const lines: string[] = [
+    "PDF сформувати неможливо.",
+    "",
+    "Причина:",
+    ...params.reasons.map((reason) => `- ${reason}`),
+  ];
+
+  if (params.layoutPlan.materials.length > 0) {
+    lines.push("", "Матеріали:");
+    for (const material of params.layoutPlan.materials) {
+      const summary = [
+        `${material.filename}.pdf`,
+        material.type,
+        material.sku ? `SKU ${material.sku}` : "",
+        material.sourceUrl ? `source: ${material.sourceUrl}` : "",
+        material.text ? `text: ${material.text}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | ");
+      lines.push(`- ${summary}`);
+    }
+  }
+
+  if (params.layoutPlan.flags.length > 0) {
+    lines.push("", "Прапорці:");
+    for (const flag of params.layoutPlan.flags) {
+      lines.push(`- ${flag}`);
+    }
+  }
+
+  if (params.layoutPlan.notes.length > 0) {
+    lines.push("", "Нотатки:");
+    for (const note of params.layoutPlan.notes) {
+      lines.push(`- ${note}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function normalizeStatusId(value: unknown): number | null {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -85,8 +168,77 @@ export function createOrderIntakeWorker({
   materialsStatusId,
   missingFileStatusId,
   opsAlertService,
+  processingAlertService = null,
   logger,
 }: CreateOrderIntakeWorkerParams): QueueHandler<OrderIntakeJobPayload> {
+  const handleMissingFile = async (params: {
+    orderId: string;
+    reasons: string[];
+    layoutPlan: LayoutPlan;
+    jobId: string;
+  }): Promise<void> => {
+    logger.warn("order_intake_missing_file_detected", {
+      orderId: params.orderId,
+      reasons: params.reasons,
+      jobId: params.jobId,
+    });
+
+    if (missingFileStatusId) {
+      try {
+        await crmClient.updateOrderStatus(params.orderId, missingFileStatusId);
+      } catch (error) {
+        logger.error("order_intake_missing_file_status_update_failed", {
+          orderId: params.orderId,
+          statusId: missingFileStatusId,
+          message: error instanceof Error ? error.message : String(error),
+          jobId: params.jobId,
+        });
+      }
+    }
+
+    const details = buildMissingFileTelegramDetails({
+      orderId: params.orderId,
+      layoutPlan: params.layoutPlan,
+      reasons: params.reasons,
+    });
+
+    if (processingAlertService) {
+      try {
+        await processingAlertService.send({
+          level: "error",
+          module: "order_intake",
+          title: "Не вдалося сформувати PDF",
+          orderId: params.orderId,
+          details,
+          dedupeKey: `processing_missing_file:${params.orderId}`,
+        });
+      } catch (error) {
+        logger.error("order_intake_missing_file_processing_alert_failed", {
+          orderId: params.orderId,
+          message: error instanceof Error ? error.message : String(error),
+          jobId: params.jobId,
+        });
+      }
+    }
+
+    try {
+      await opsAlertService.send({
+        level: "error",
+        module: "order_intake",
+        title: 'Замовлення переведено в "Без файлу"',
+        orderId: params.orderId,
+        details,
+        dedupeKey: `missing_file:${params.orderId}`,
+      });
+    } catch (error) {
+      logger.error("order_intake_missing_file_alert_failed", {
+        orderId: params.orderId,
+        message: error instanceof Error ? error.message : String(error),
+        jobId: params.jobId,
+      });
+    }
+  };
+
   return async (job) => {
     const webhookStatusId = normalizeStatusId(job.payload.statusId);
     if (webhookStatusId !== null && webhookStatusId !== materialsStatusId) {
@@ -129,42 +281,12 @@ export function createOrderIntakeWorker({
 
     const immediateMissingFileReasons = collectImmediateMissingFileReasons(layoutPlan);
     if (immediateMissingFileReasons.length > 0) {
-      logger.warn("order_intake_missing_file_detected", {
+      await handleMissingFile({
         orderId,
         reasons: immediateMissingFileReasons,
+        layoutPlan,
         jobId: job.id,
       });
-
-      if (missingFileStatusId) {
-        try {
-          await crmClient.updateOrderStatus(orderId, missingFileStatusId);
-        } catch (error) {
-          logger.error("order_intake_missing_file_status_update_failed", {
-            orderId,
-            statusId: missingFileStatusId,
-            message: error instanceof Error ? error.message : String(error),
-            jobId: job.id,
-          });
-        }
-      }
-
-      try {
-        await opsAlertService.send({
-          level: "error",
-          module: "order_intake",
-          title: 'Замовлення переведено в "Без файлу"',
-          orderId,
-          details: immediateMissingFileReasons.join("\n"),
-          dedupeKey: `missing_file:${orderId}`,
-        });
-      } catch (error) {
-        logger.error("order_intake_missing_file_alert_failed", {
-          orderId,
-          message: error instanceof Error ? error.message : String(error),
-          jobId: job.id,
-        });
-      }
-
       return;
     }
 
@@ -185,6 +307,23 @@ export function createOrderIntakeWorker({
     }
 
     if (pdfResult.failed.length > 0) {
+      const deterministicDownloadFailureReasons = collectDeterministicDownloadFailureReasons({
+        layoutPlan,
+        failed: pdfResult.failed,
+      });
+      if (
+        deterministicDownloadFailureReasons.length > 0 &&
+        deterministicDownloadFailureReasons.length === pdfResult.failed.length
+      ) {
+        await handleMissingFile({
+          orderId,
+          reasons: deterministicDownloadFailureReasons,
+          layoutPlan,
+          jobId: job.id,
+        });
+        return;
+      }
+
       const firstFailure = pdfResult.failed[0];
       const firstFailureMessage = firstFailure
         ? `${firstFailure.filename} -> ${firstFailure.message}`
