@@ -26,12 +26,16 @@ const A3_HEIGHT_MM = 420;
 const DEFAULT_STICKER_SIZE_MM = 100;
 const DEFAULT_FONT_SIZE = 28;
 const MIN_FONT_SIZE = 4;
+const DEFAULT_TEXT_BOX_INITIAL_SCALE = 0.65;
+const STICKER_TEXT_BOX_INITIAL_SCALE = 0.34;
 const MAX_PADDING_MM = 5;
 const MIN_PADDING_MM = 1.5;
 const DEFAULT_SOURCE_REQUEST_TIMEOUT_MS = 20_000;
 const DEFAULT_SOURCE_REQUEST_RETRIES = 2;
 const DEFAULT_SOURCE_REQUEST_RETRY_BASE_MS = 800;
 const DEFAULT_EMOJI_REQUEST_TIMEOUT_MS = 10_000;
+const EMOJI_SLOT_WIDTH_SCALE = 1.08;
+const EMOJI_DRAW_SIZE_SCALE = 0.82;
 
 const ENGRAVING_ZONE_BY_FORMAT: Record<string, { widthMm: number; heightMm: number }> = {
   A5: { widthMm: 148, heightMm: 22 },
@@ -1786,7 +1790,7 @@ function resolveClusterRuns(
 
   for (const candidateText of candidateTexts) {
     const resolved = tryResolveRunWithFonts(fontSet, candidateText);
-    if (resolved.hasDrawableGlyph) {
+    if (resolved.hasDrawableGlyph || /^\s+$/u.test(candidateText)) {
       return [{ kind: "run", ...resolved }];
     }
   }
@@ -1825,7 +1829,7 @@ function getLineLayout(
     const resolvedRuns = resolveClusterRuns(fontSet, cluster, emojiRuntime);
     for (const resolved of resolvedRuns) {
       if (resolved.kind === "emoji") {
-        const emojiWidthPt = fontSize;
+        const emojiWidthPt = fontSize * EMOJI_SLOT_WIDTH_SCALE;
         const emojiStartXPt = penXPt;
         minXPt = Math.min(minXPt, emojiStartXPt);
         maxXPt = Math.max(maxXPt, emojiStartXPt + emojiWidthPt);
@@ -2086,11 +2090,12 @@ async function drawLine(options: {
       const imageAspect = imageWidthPx / imageHeightPx;
       const slotWidthPt = segment.widthPt;
       const slotHeightPt = segment.heightPt;
-      let drawWidthPt = slotWidthPt;
+      const maxDrawSizePt = Math.min(slotWidthPt, slotHeightPt, fontSize * EMOJI_DRAW_SIZE_SCALE);
+      let drawWidthPt = maxDrawSizePt;
       let drawHeightPt = drawWidthPt / imageAspect;
 
-      if (drawHeightPt > slotHeightPt) {
-        drawHeightPt = slotHeightPt;
+      if (drawHeightPt > maxDrawSizePt) {
+        drawHeightPt = maxDrawSizePt;
         drawWidthPt = drawHeightPt * imageAspect;
       }
 
@@ -2134,8 +2139,13 @@ function fitTextToBox(
   widthPt: number,
   heightPt: number,
   emojiRuntime: EmojiRuntime | null = null,
+  options: { initialScale?: number } = {},
 ): { fontSize: number; lines: string[] } {
-  let fontSize = Math.max(DEFAULT_FONT_SIZE, Math.floor(Math.min(widthPt, heightPt) * 0.65));
+  const initialScale = Math.min(
+    1,
+    Math.max(0.2, Number(options.initialScale ?? DEFAULT_TEXT_BOX_INITIAL_SCALE)),
+  );
+  let fontSize = Math.max(DEFAULT_FONT_SIZE, Math.floor(Math.min(widthPt, heightPt) * initialScale));
   let lines: string[] = [];
 
   while (fontSize >= MIN_FONT_SIZE) {
@@ -2170,8 +2180,9 @@ async function drawTextInBox(
   box: { x: number; y: number; width: number; height: number },
   emojiRuntime: EmojiRuntime | null,
   warnings: string[],
+  fitOptions: { initialScale?: number } = {},
 ): Promise<void> {
-  const fit = fitTextToBox(fontSet, text, box.width, box.height, emojiRuntime);
+  const fit = fitTextToBox(fontSet, text, box.width, box.height, emojiRuntime, fitOptions);
   const lineMetrics = getLineMetrics(fontSet.primary, fit.fontSize);
   const blockHeight = calculateBlockHeight(fontSet.primary, fit.lines, fit.fontSize);
   const contentBottom = box.y + (box.height - blockHeight) / 2;
@@ -2290,6 +2301,7 @@ async function createStickerPdf(options: {
     },
     emojiRuntime,
     warnings,
+    { initialScale: STICKER_TEXT_BOX_INITIAL_SCALE },
   );
 
   const pdfBytes = await pdfDoc.save();
@@ -2864,3 +2876,11 @@ export async function enforceOffWhiteInPdf(input: EnforceOffWhiteInput): Promise
     allowSoftMaskFallback: true,
   });
 }
+
+export const __materialGeneratorTestUtils = {
+  createFontSet,
+  loadFont,
+  resolveClusterRuns,
+  getLineLayout,
+  fitTextToBox,
+};

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { PDFDocument } from "pdf-lib";
+import type { Font, GlyphRun } from "@pdf-lib/fontkit";
 
 type MutablePng = {
   width: number;
@@ -75,6 +76,39 @@ const materialGeneratorRuntime = require("../src/modules/pdf/material-generator.
       details: Record<string, unknown>;
     }>;
   }>;
+  __materialGeneratorTestUtils: {
+    createFontSet: (primary: Font, fallbacks?: Font[]) => { primary: Font; fallbacks: Font[] };
+    loadFont: (fontPath: string) => Promise<Font>;
+    resolveClusterRuns: (
+      fontSet: { primary: Font; fallbacks: Font[] },
+      cluster: unknown,
+      emojiRuntime: unknown,
+    ) => Array<
+      | { kind: "run"; font: Font; run: GlyphRun; hasDrawableGlyph: boolean }
+      | { kind: "emoji"; cluster: string }
+    >;
+    getLineLayout: (
+      fontSet: { primary: Font; fallbacks: Font[] },
+      text: string,
+      fontSize: number,
+      emojiRuntime?: unknown,
+    ) => {
+      width: number;
+      minX: number;
+      segments: Array<
+        | { kind: "run"; xPt: number; scale: number; glyphs: unknown[]; positions: Array<{ xAdvance: number }> }
+        | { kind: "emoji"; cluster: string; xPt: number; widthPt: number; heightPt: number }
+      >;
+    };
+    fitTextToBox: (
+      fontSet: { primary: Font; fallbacks: Font[] },
+      text: string,
+      widthPt: number,
+      heightPt: number,
+      emojiRuntime?: unknown,
+      options?: { initialScale?: number },
+    ) => { fontSize: number; lines: string[] };
+  };
 };
 
 function hasGhostscript(): boolean {
@@ -204,6 +238,13 @@ async function createTransparentPosterDataUrl(): Promise<string> {
 
 async function createTempOutputRoot(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+async function loadPrimaryFontSet(): Promise<{ primary: Font; fallbacks: Font[] }> {
+  const primary = await materialGeneratorRuntime.__materialGeneratorTestUtils.loadFont(
+    path.resolve(process.cwd(), "assets/fonts/Caveat-VariableFont_wght.ttf"),
+  );
+  return materialGeneratorRuntime.__materialGeneratorTestUtils.createFontSet(primary, []);
 }
 
 test("generateMaterialFiles preserves soft mask for posters with internal transparency", async (t) => {
@@ -427,4 +468,76 @@ test("generateMaterialFiles warns about missing apple emoji source only when tex
     ),
     true,
   );
+});
+
+test("resolveClusterRuns preserves whitespace as spacing instead of fallback question glyph", async () => {
+  const fontSet = await loadPrimaryFontSet();
+
+  const runs = materialGeneratorRuntime.__materialGeneratorTestUtils.resolveClusterRuns(
+    fontSet,
+    " ",
+    null,
+  );
+
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.kind, "run");
+  const firstRun = runs[0];
+  if (!firstRun || firstRun.kind !== "run") {
+    assert.fail("Whitespace cluster should resolve to a layout run.");
+  }
+  const firstPosition = firstRun.run.positions[0];
+  if (!firstPosition) {
+    assert.fail("Whitespace run should keep an advance position.");
+  }
+  assert.ok(firstPosition.xAdvance > 0);
+});
+
+test("emoji layout keeps extra side bearing around apple-image emoji clusters", async () => {
+  const fontSet = await loadPrimaryFontSet();
+  const emojiRuntime = {
+    mode: "apple_image",
+    assetsDir: path.resolve(process.cwd(), "node_modules/emoji-datasource-apple/img/apple/64"),
+    baseUrl: "",
+    bytesCache: new Map<string, Buffer | null>(),
+    missingWarned: new Set<string>(),
+  };
+
+  const layout = materialGeneratorRuntime.__materialGeneratorTestUtils.getLineLayout(
+    fontSet,
+    "Ти найкращий☺️",
+    40,
+    emojiRuntime,
+  );
+
+  const emojiSegment = layout.segments.find((segment) => segment.kind === "emoji");
+  assert.ok(emojiSegment);
+  if (!emojiSegment || emojiSegment.kind !== "emoji") {
+    assert.fail("Expected an emoji segment in the line layout.");
+  }
+  assert.ok(emojiSegment.widthPt > 40);
+});
+
+test("fitTextToBox caps sticker text size lower than default box fill", async () => {
+  const fontSet = await loadPrimaryFontSet();
+  const widthPt = 238;
+  const heightPt = 238;
+
+  const defaultFit = materialGeneratorRuntime.__materialGeneratorTestUtils.fitTextToBox(
+    fontSet,
+    "Люблю!",
+    widthPt,
+    heightPt,
+    null,
+  );
+  const stickerFit = materialGeneratorRuntime.__materialGeneratorTestUtils.fitTextToBox(
+    fontSet,
+    "Люблю!",
+    widthPt,
+    heightPt,
+    null,
+    { initialScale: 0.34 },
+  );
+
+  assert.ok(stickerFit.fontSize < defaultFit.fontSize);
+  assert.ok(stickerFit.fontSize <= Math.floor(Math.min(widthPt, heightPt) * 0.34));
 });
