@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PdfGeneratedFile } from "../pdf/pdf.types";
 import type { TelegramDeliveryRecord } from "./db-telegram-delivery-store";
-import { sendOrderFilesToTelegram, type SendOrderFilesResult } from "./telegram-client";
+import {
+  sendOrderFilesToTelegram,
+  type PreviewCaptionDetails,
+  type SendOrderFilesResult,
+} from "./telegram-client";
 
 type TelegramRequestOptions = {
   timeoutMs: number;
@@ -15,6 +19,7 @@ type TelegramDeliveryInput = {
   warnings: string[];
   qrUrl: string | null;
   previewImages: string[];
+  previewDetails?: PreviewCaptionDetails | null;
   generatedFiles: PdfGeneratedFile[];
 };
 
@@ -146,6 +151,7 @@ export class TelegramDeliveryService {
         warnings: Array.isArray(input.warnings) ? input.warnings : [],
         qrUrl: input.qrUrl,
         previewImages: Array.isArray(input.previewImages) ? input.previewImages : [],
+        previewDetails: input.previewDetails ?? null,
         generatedFiles: input.generatedFiles.map((item) => ({
           path: item.path,
           filename: item.filename,
@@ -207,6 +213,7 @@ function buildDeliveryKey(input: {
   warnings: string[];
   qrUrl: string | null;
   previewImages: string[];
+  previewDetails?: PreviewCaptionDetails | null;
   generatedFiles: PdfGeneratedFile[];
 }): string {
   const signature = JSON.stringify({
@@ -221,6 +228,16 @@ function buildDeliveryKey(input: {
       .map((item) => String(item ?? "").trim())
       .filter(Boolean)
       .sort(),
+    previewDetails: {
+      engravingTexts: [...(input.previewDetails?.engravingTexts ?? [])]
+        .map((item) => String(item ?? "").trim())
+        .filter(Boolean)
+        .sort(),
+      stickerTexts: [...(input.previewDetails?.stickerTexts ?? [])]
+        .map((item) => String(item ?? "").trim())
+        .filter(Boolean)
+        .sort(),
+    },
     generatedFiles: (input.generatedFiles ?? [])
       .map((item) => ({
         type: item.type,

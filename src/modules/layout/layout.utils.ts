@@ -6,6 +6,18 @@ export function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+export function stripEmoji(value: unknown): string {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return "";
+  }
+
+  return normalized
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}\u{200D}\u{20E3}\u{FE0F}]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function normalizeKey(value: unknown): string {
   return normalizeText(value).toLowerCase();
 }

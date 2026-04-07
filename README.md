@@ -15,6 +15,27 @@ TypeScript-сервіс для повного циклу обробки замо
 
 Сервіс приймає подію `order.change_order_status` з KeyCRM, обробляє замовлення на статусі `Матеріали = 20`, формує файли для друку і відправляє їх у Telegram. Далі оператор ставить реакцію під PDF-повідомленням, після чого сервіс змінює CRM-статус і пересилає комплект у наступну робочу гілку.
 
+## Простий порядок обробки замовлення
+
+1. KeyCRM надсилає webhook про зміну статусу.
+2. `receiver` кладе job у `order_intake`.
+3. `order-worker` забирає job і ще раз перевіряє, що order реально стоїть у `Матеріали = 20`.
+4. Будується `layout plan`:
+   - які PDF треба зробити;
+   - які є прапорці (`QR +`, `LF +`, `A6 +`, `B +`);
+   - які є preview;
+   - які є warning-и.
+5. Далі йдуть ранні перевірки:
+   - немає `_tib_design_link_1` -> одразу `40 / Без файлу`;
+   - є engraving/sticker, але немає тексту -> одразу `40 / Без файлу`;
+   - `_tib_design_link_1` є, але CDN/TeeInBlue дає `403/404` -> CRM статус не змінюємо, тільки шлемо alert `Не вдалося сформувати PDF`.
+6. Якщо ранніх блокерів немає, запускається PDF pipeline.
+7. Готові preview і PDF летять у Telegram topic `ОБРОБКА`.
+   - перше preview показує також текст гравіювання і стікера, якщо вони є;
+   - у стікері emoji автоматично вирізаються, лишається тільки plain text.
+8. Оператор ставить `❤️` під PDF.
+9. `reaction-worker` змінює CRM статус на `22 / Друк` і копіює PDF у topic `ЗАМОВЛЕННЯ`.
+
 ## Основні компоненти
 
 - `receiver`
@@ -36,7 +57,26 @@ TypeScript-сервіс для повного циклу обробки замо
   - `немає _tib_design_link_1` -> CRM `40 / Без файлу`
   - `немає тексту для engraving/sticker` -> CRM `40 / Без файлу`
   - `_tib_design_link_1` є, але CDN дає `403/404` -> CRM статус не змінюється, у Telegram іде alert `Не вдалося сформувати PDF`
+- white cleanup повернутий до legacy-aggressive preset:
+  - `WHITE_REPLACE_ITERATIONS = 3`
+  - `WHITE_FINAL_ITERATIONS = 3`
+  - жорсткіший near-white selection для прибирання залишкового білого
 - решта технічних помилок типізуються і відправляються в retry / DLQ
+
+## Як зараз працюють retry
+
+- retry є тільки там, де worker кидає `retryable` помилку
+- `order_intake` має `maxAttempts = 3`
+- `reaction_intake` має `maxAttempts = 2`
+- retry потрібен для тимчасових проблем:
+  - timeout CRM;
+  - network/fetch помилка;
+  - `429/5xx` від Telegram;
+  - тимчасовий збій PDF pipeline
+- retry немає для deterministic кейсів:
+  - немає `_tib_design_link_1`
+  - немає тексту engraving/sticker
+  - source URL дає `403/404`
 
 ## Стек
 

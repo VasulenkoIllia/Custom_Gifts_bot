@@ -3,7 +3,24 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { sendOrderFilesToTelegram } from "../src/modules/telegram/telegram-client";
+import {
+  buildPreviewCaption,
+  sendOrderFilesToTelegram,
+} from "../src/modules/telegram/telegram-client";
+
+test("buildPreviewCaption includes engraving and sticker text when present", () => {
+  const caption = buildPreviewCaption({
+    orderId: "29068",
+    previewDetails: {
+      engravingTexts: ["25.05.25", "Найкращому татові"],
+      stickerTexts: ["Любимо тебе"],
+    },
+  });
+
+  assert.match(caption, /^Замовлення 29068\nПрев'ю макету/);
+  assert.match(caption, /\nГравіювання:\n- 25\.05\.25\n- Найкращому татові/);
+  assert.match(caption, /\nСтікер:\n- Любимо тебе/);
+});
 
 test("sendOrderFilesToTelegram keeps preview ids separate from file message ids", async (t) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "telegram-client-test-"));
@@ -16,12 +33,18 @@ test("sendOrderFilesToTelegram keeps preview ids separate from file message ids"
 
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  let previewCaption = "";
+  let fileCaption = "";
 
-  globalThis.fetch = (async (url: string | URL) => {
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
     const urlString = String(url);
     calls.push(urlString);
 
     if (urlString.includes("/sendPhoto")) {
+      const form = init?.body;
+      if (form instanceof FormData) {
+        previewCaption = String(form.get("caption") ?? "");
+      }
       return new Response(
         JSON.stringify({
           ok: true,
@@ -35,6 +58,10 @@ test("sendOrderFilesToTelegram keeps preview ids separate from file message ids"
     }
 
     if (urlString.includes("/sendDocument")) {
+      const form = init?.body;
+      if (form instanceof FormData) {
+        fileCaption = String(form.get("caption") ?? "");
+      }
       return new Response(
         JSON.stringify({
           ok: true,
@@ -63,6 +90,10 @@ test("sendOrderFilesToTelegram keeps preview ids separate from file message ids"
     warnings: [],
     qrUrl: null,
     previewImages: ["https://example.com/preview.jpg"],
+    previewDetails: {
+      engravingTexts: ["23.06.1999"],
+      stickerTexts: ["Cancer"],
+    },
     generatedFiles: [
       {
         filename: "CGU_AA5_29403_1_1.pdf",
@@ -76,4 +107,7 @@ test("sendOrderFilesToTelegram keeps preview ids separate from file message ids"
   assert.deepEqual(result.message_ids, [701]);
   assert.equal(result.preview_count, 1);
   assert.equal(result.message_count, 1);
+  assert.match(previewCaption, /\nГравіювання:\n- 23\.06\.1999/);
+  assert.match(previewCaption, /\nСтікер:\n- Cancer/);
+  assert.doesNotMatch(fileCaption, /Гравіювання|Стікер/);
 });

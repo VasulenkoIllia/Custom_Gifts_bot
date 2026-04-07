@@ -238,6 +238,95 @@ test("LayoutPlanBuilder warns and skips engraving/sticker files when text is mis
   ]);
 });
 
+test("LayoutPlanBuilder strips emoji from sticker text and keeps plain text", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 9031,
+    products: [
+      {
+        id: 201,
+        sku: "PhotoPosterA5Wood",
+        name: "Photo poster",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+          { name: "Стікер-записка", value: "Так" },
+          { name: "Текст на стікер", value: "Любимо тебе 🥰" },
+        ],
+        offer: {
+          sku: "PhotoPosterA5Wood",
+          properties: [{ name: "Розмір", value: "A5" }],
+        },
+      },
+    ],
+  });
+
+  assert.equal(plan.materials.length, 2);
+  assert.equal(plan.materials[1]?.type, "sticker");
+  assert.equal(plan.materials[1]?.text, "Любимо тебе");
+  assert.equal(plan.notes.length, 0);
+});
+
+test("LayoutPlanBuilder treats emoji-only sticker text as missing text", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 9032,
+    products: [
+      {
+        id: 202,
+        sku: "PhotoPosterA5Wood",
+        name: "Photo poster",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+          { name: "Стікер-записка", value: "Так" },
+          { name: "Текст на стікер", value: "🥰❤️" },
+        ],
+        offer: {
+          sku: "PhotoPosterA5Wood",
+          properties: [{ name: "Розмір", value: "A5" }],
+        },
+      },
+    ],
+  });
+
+  assert.equal(plan.materials.length, 1);
+  assert.deepEqual(plan.notes, [
+    "🚨 Замовлено стікер, але текст відсутній. Файл CGU_S_9032_2_2 не згенеровано.",
+  ]);
+});
+
+test("LayoutPlanBuilder keeps emoji-only sticker text as missing even when text field is the only sticker signal", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 9033,
+    products: [
+      {
+        id: 203,
+        sku: "PhotoPosterA5Wood",
+        name: "Photo poster",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+          { name: "Текст на стікер", value: "🥰❤️" },
+        ],
+        offer: {
+          sku: "PhotoPosterA5Wood",
+          properties: [{ name: "Розмір", value: "A5" }],
+        },
+      },
+    ],
+  });
+
+  assert.equal(plan.materials.length, 1);
+  assert.deepEqual(plan.notes, [
+    "🚨 Замовлено стікер, але текст відсутній. Файл CGU_S_9033_2_2 не згенеровано.",
+  ]);
+});
+
 test("LayoutPlanBuilder does not use preview image as poster print source", async () => {
   const rules = await loadProductCodeRules(rulesPath);
   const builder = new LayoutPlanBuilder(rules);

@@ -12,6 +12,20 @@
   - `telegram_delivery` -> `missingTelegramStatusId`;
 - storage retention cleanup для `OUTPUT_DIR` і `TEMP_DIR`.
 
+## 0.1 Простий order flow
+- webhook з KeyCRM приходить у `receiver`
+- `receiver` кладе order у `order_intake`
+- `order-worker` тягне order з CRM і будує `layout plan`
+- далі можливі 3 ранні сценарії:
+  - немає `_tib_design_link_1` -> одразу `40 / Без файлу`
+  - немає тексту engraving/sticker -> одразу `40 / Без файлу`
+  - source URL є, але CDN/TeeInBlue дає `403/404` -> CRM статус не змінюємо, тільки шлемо alert
+- якщо ранніх блокерів немає, генеруємо PDF
+- preview + PDF летять у `ОБРОБКА`
+- перше preview додатково показує тексти engraving/sticker, якщо вони є
+- у sticker emoji автоматично вирізаються; якщо після цього текст порожній, sticker вважається `без тексту`
+- після `❤️` order переходить у `Друк`, а PDF копіюються в `ЗАМОВЛЕННЯ`
+
 ## 1. Як має працювати webhook у production
 - KeyCRM надсилає webhook у receiver.
 - Receiver валідовує запит.
@@ -70,6 +84,10 @@
   - обережний retry тільки на transient помилках;
   - на deterministic missing-file кейсах PDF взагалі не стартує.
 
+Простіше:
+- retry є тільки для тимчасових помилок;
+- якщо система точно розуміє, що order зараз не може бути оброблений, retry не робиться.
+
 ## 5. Що вважати deterministic помилкою
 - відсутній source PDF
 - замовлено engraving/sticker, але текст відсутній
@@ -104,6 +122,23 @@
 - не змінює CRM статус;
 - не відправляє PDF у Telegram;
 - відправляє `error` alert у Telegram processing і ops chat з деталями order та source URL.
+
+## 5.3 White cleanup
+Поточний TS pipeline повернутий до legacy-aggressive preset, бо м'якші значення іноді лишали залишковий білий:
+- `whiteThreshold = 252`
+- `whiteMaxSaturation = 0.03`
+- `whiteLabDeltaEMax = 3`
+- `whiteLabSoftness = 1`
+- `whiteMinLightness = 99.5`
+- `whiteFeatherPx = 0.35`
+- `whiteCleanupPasses = 3`
+- `whiteReplaceIterations = 3`
+- `whiteFinalIterations = 3`
+
+Практично це означає:
+- звичайний poster проходить агресивніше очищення білого;
+- Spotify overlay poster має ще один додатковий post-overlay off-white pass;
+- обробка стала повільнішою, але стабільнішою проти залишкового білого.
 
 ## 6. Що вважати transient помилкою
 - timeout CRM

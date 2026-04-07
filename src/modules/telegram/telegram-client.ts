@@ -48,6 +48,11 @@ type BuildCaptionParams = {
   qrUrl: string | null;
 };
 
+export type PreviewCaptionDetails = {
+  engravingTexts: string[];
+  stickerTexts: string[];
+};
+
 export type SendOrderFilesInput = {
   botToken: string;
   chatId: string;
@@ -57,6 +62,7 @@ export type SendOrderFilesInput = {
   warnings: string[];
   qrUrl: string | null;
   previewImages: string[];
+  previewDetails?: PreviewCaptionDetails | null;
   generatedFiles: TelegramFile[];
   requestOptions?: RequestOptions;
 };
@@ -266,6 +272,41 @@ export function buildCaption({
 
   if (normalizedFlags.length) {
     lines.push("", ...normalizedFlags);
+  }
+
+  const caption = lines.join("\n");
+  if (caption.length <= MAX_CAPTION_LENGTH) {
+    return caption;
+  }
+
+  return `${caption.slice(0, MAX_CAPTION_LENGTH - 3)}...`;
+}
+
+export function buildPreviewCaption(params: {
+  orderId: string;
+  previewDetails?: PreviewCaptionDetails | null;
+}): string {
+  const engravingTexts = Array.isArray(params.previewDetails?.engravingTexts)
+    ? params.previewDetails.engravingTexts.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+  const stickerTexts = Array.isArray(params.previewDetails?.stickerTexts)
+    ? params.previewDetails.stickerTexts.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+
+  const lines: string[] = [`Замовлення ${params.orderId}`, "Прев'ю макету"];
+
+  if (engravingTexts.length > 0) {
+    lines.push("", "Гравіювання:");
+    for (const text of engravingTexts) {
+      lines.push(`- ${text}`);
+    }
+  }
+
+  if (stickerTexts.length > 0) {
+    lines.push("", "Стікер:");
+    for (const text of stickerTexts) {
+      lines.push(`- ${text}`);
+    }
   }
 
   const caption = lines.join("\n");
@@ -614,6 +655,7 @@ async function sendPreviewPhotos({
   messageThreadId,
   orderId,
   previewImages,
+  previewDetails,
   requestOptions,
 }: {
   botToken: string;
@@ -621,6 +663,7 @@ async function sendPreviewPhotos({
   messageThreadId?: string;
   orderId: string;
   previewImages: string[];
+  previewDetails?: PreviewCaptionDetails | null;
   requestOptions?: RequestOptions;
 }): Promise<{ messages: TelegramMessage[]; errors: string[] }> {
   const urls = Array.isArray(previewImages) ? previewImages.filter(Boolean) : [];
@@ -631,7 +674,13 @@ async function sendPreviewPhotos({
   const messages: TelegramMessage[] = [];
   const errors: string[] = [];
   for (let index = 0; index < urls.length; index += 1) {
-    const caption = index === 0 ? `Замовлення ${orderId}\nПрев'ю макету` : undefined;
+    const caption =
+      index === 0
+        ? buildPreviewCaption({
+            orderId,
+            previewDetails,
+          })
+        : undefined;
     try {
       const message = await sendSinglePreviewPhoto({
         botToken,
@@ -728,6 +777,7 @@ export async function sendOrderFilesToTelegram({
   warnings,
   qrUrl,
   previewImages,
+  previewDetails,
   generatedFiles,
   requestOptions = {},
 }: SendOrderFilesInput): Promise<SendOrderFilesResult> {
@@ -741,6 +791,7 @@ export async function sendOrderFilesToTelegram({
     messageThreadId,
     orderId,
     previewImages,
+    previewDetails,
     requestOptions,
   });
   const previewMessages = previewResult.messages;

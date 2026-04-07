@@ -159,6 +159,25 @@ function normalizeStatusId(value: unknown): number | null {
   return parsed;
 }
 
+function buildPreviewDetails(layoutPlan: LayoutPlan): {
+  engravingTexts: string[];
+  stickerTexts: string[];
+} {
+  const engravingTexts = layoutPlan.materials
+    .filter((material) => material.type === "engraving")
+    .map((material) => String(material.text ?? "").trim())
+    .filter(Boolean);
+  const stickerTexts = layoutPlan.materials
+    .filter((material) => material.type === "sticker")
+    .map((material) => String(material.text ?? "").trim())
+    .filter(Boolean);
+
+  return {
+    engravingTexts,
+    stickerTexts,
+  };
+}
+
 export function createOrderIntakeWorker({
   crmClient,
   layoutPlanBuilder,
@@ -351,6 +370,7 @@ export function createOrderIntakeWorker({
     const telegramWarnings = Array.from(
       new Set([...layoutPlan.notes, ...pdfResult.warnings]),
     );
+    const previewDetails = buildPreviewDetails(layoutPlan);
     const captionQrUrl = resolveCaptionQrUrl({
       layoutPlan,
       generatedFiles: pdfResult.generated,
@@ -364,6 +384,7 @@ export function createOrderIntakeWorker({
         warnings: telegramWarnings,
         qrUrl: captionQrUrl,
         previewImages: layoutPlan.previewImages,
+        previewDetails,
         generatedFiles: pdfResult.generated,
       });
     } catch (error) {

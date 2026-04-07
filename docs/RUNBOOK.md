@@ -277,6 +277,10 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
    - PDF у `ОБРОБКА` не з'являються;
    - в processing і ops chat приходить `Не вдалося сформувати PDF`;
    - запису в `dead_letters` бути не повинно.
+10. Для order з проблемним білим фоном:
+   - poster має проходити legacy-aggressive white cleanup;
+   - залишковий чистий білий не повинен лишатися;
+   - обробка може бути довша через додаткові ітерації recolor/final cleanup.
 
 ## 4. Реакція на інциденти
 ### 4.1 Deterministic missing-file
@@ -321,6 +325,27 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 2. Визначити `failureKind` (`pdf_generation` або `telegram_delivery`).
 3. Виправити причину.
 4. Повторно відправити замовлення (через CRM повторний статус/webhook).
+
+### 4.2.1 Як зараз працює retry
+Принцип простий:
+1. worker кидає помилку;
+2. queue дивиться, чи вона `retryable`;
+3. якщо так і ліміт спроб не вичерпаний, job повертається в `queued`;
+4. якщо ні, job завершується як failed / DLQ path.
+
+Поточні ліміти:
+- `order_intake`: до `3` спроб
+- `reaction_intake`: до `2` спроб
+
+Retry є для:
+- timeout / network error;
+- `429/5xx` від Telegram;
+- тимчасових CRM/PDF збоїв.
+
+Retry немає для:
+- немає `_tib_design_link_1`;
+- немає тексту engraving/sticker;
+- source PDF URL повертає `403/404`.
 
 ### 4.3 Telegram недоступний / rate limit
 Ознаки:

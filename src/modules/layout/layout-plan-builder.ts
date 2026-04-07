@@ -7,6 +7,7 @@ import {
   isTruthyValue,
   isValidHttpUrl,
   normalizeText,
+  stripEmoji,
 } from "./layout.utils";
 import type { LayoutMaterial, LayoutPlan } from "./layout.types";
 import type { ProductCodeRules } from "./product-code-rules";
@@ -106,7 +107,8 @@ export class LayoutPlanBuilder {
       });
 
       const engravingText = this.findFirstProperty(linked, this.rules.propertyNames.engravingText);
-      const stickerText = this.findFirstProperty(linked, this.rules.propertyNames.stickerText);
+      const rawStickerText = this.findFirstProperty(linked, this.rules.propertyNames.stickerText);
+      const stickerText = stripEmoji(rawStickerText);
 
       const hasEngraving =
         Boolean(engravingText) ||
@@ -114,7 +116,7 @@ export class LayoutPlanBuilder {
         this.hasAddonPattern(linked, ["engraving", "грав"]);
 
       const hasSticker =
-        Boolean(stickerText) ||
+        Boolean(rawStickerText) ||
         this.hasTruthyProperty(linked, this.rules.propertyNames.stickerFlag) ||
         this.hasAddonPattern(linked, ["sticker", "стікер"]);
 
