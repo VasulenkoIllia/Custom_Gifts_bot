@@ -1,5 +1,7 @@
 type OpsAlertLevel = "warning" | "error" | "critical";
 
+type OpsAlertSendResult = { sent: boolean; deduplicated: boolean; error?: string };
+
 type CreateOpsAlertServiceParams = {
   botToken: string;
   chatId: string;
@@ -89,12 +91,9 @@ export class OpsAlertService {
     orderId?: string;
     details?: string;
     dedupeKey?: string;
-  }): Promise<{ sent: boolean; deduplicated: boolean }> {
+  }): Promise<OpsAlertSendResult> {
     if (!this.isEnabled()) {
-      return {
-        sent: false,
-        deduplicated: false,
-      };
+      return { sent: false, deduplicated: false };
     }
 
     const dedupeKey =
@@ -103,10 +102,7 @@ export class OpsAlertService {
     const now = Date.now();
     const lastSentAt = this.dedupeMap.get(dedupeKey) ?? 0;
     if (this.dedupeWindowMs > 0 && now - lastSentAt < this.dedupeWindowMs) {
-      return {
-        sent: false,
-        deduplicated: true,
-      };
+      return { sent: false, deduplicated: true };
     }
 
     const text = formatAlertText({
@@ -117,14 +113,28 @@ export class OpsAlertService {
       details: params.details,
     });
 
-    await this.sendMessage(text);
+    try {
+      await this.sendMessage(text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `${JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          service: "ops-alert",
+          event: "ops_alert_send_failed",
+          module: params.module,
+          alertLevel: params.level,
+          message,
+        })}\n`,
+      );
+      return { sent: false, deduplicated: false, error: message };
+    }
+
     this.dedupeMap.set(dedupeKey, now);
     this.cleanupDedupe(now);
 
-    return {
-      sent: true,
-      deduplicated: false,
-    };
+    return { sent: true, deduplicated: false };
   }
 
   private cleanupDedupe(now: number): void {

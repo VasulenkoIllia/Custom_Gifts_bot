@@ -384,6 +384,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
   const orderQueue = new DbQueueService<OrderIntakeJobPayload>({
     db: postgresClient,
     name: "order_intake",
+    logger,
     concurrency: config.orderQueueConcurrency,
     maxQueueSize: config.orderQueueMaxSize,
     jobTimeoutMs: config.queueJobTimeoutMs,
@@ -424,10 +425,20 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
           await crmClient.updateOrderStatus(orderId, reactionStatusRules.missingTelegramStatusId);
         }
       } catch (error) {
+        const statusUpdateErrorMsg = error instanceof Error ? error.message : String(error);
         logger.error("order_dead_letter_status_update_failed", {
           orderId,
           failureKind,
-          message: error instanceof Error ? error.message : String(error),
+          message: statusUpdateErrorMsg,
+        });
+        // Alert ops so the status mismatch is not silently lost.
+        await opsAlertService.send({
+          level: "error",
+          module: "order_intake",
+          title: "DLQ status update failed — order stuck in wrong CRM status",
+          orderId,
+          details: statusUpdateErrorMsg,
+          dedupeKey: `dlq_status_update_failed:${orderId}`,
         });
       }
 
@@ -465,6 +476,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
   const reactionQueue = new DbQueueService<ReactionIntakeJobPayload>({
     db: postgresClient,
     name: "reaction_intake",
+    logger,
     concurrency: reactionQueueConcurrency,
     maxQueueSize: config.reactionQueueMaxSize,
     jobTimeoutMs: config.queueJobTimeoutMs,
@@ -546,8 +558,10 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     storageRetentionService,
     dbRetentionService,
     shutdown: async () => {
-      storageRetentionService.stop();
-      dbRetentionService.stop();
+      await Promise.allSettled([
+        storageRetentionService.stopAndWait(),
+        dbRetentionService.stopAndWait(),
+      ]);
       const queueShutdownTimeoutMs = Math.max(30_000, config.queueJobTimeoutMs + 5_000);
       try {
         await Promise.allSettled([

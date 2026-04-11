@@ -68,6 +68,13 @@ export class DbRetentionService {
     }
   }
 
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    if (this.runPromise) {
+      await this.runPromise;
+    }
+  }
+
   async runOnce(): Promise<void> {
     if (this.runPromise) {
       return this.runPromise;

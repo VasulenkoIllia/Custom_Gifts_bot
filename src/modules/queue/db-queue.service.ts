@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/postgres-client";
+import type { Logger } from "../../observability/logger";
 import { QueueOverflowError } from "./queue-errors";
 import type {
   QueueDeadLetterEvent,
@@ -47,6 +48,7 @@ type QueueStatsRow = {
 type DbQueueServiceOptions<TPayload> = QueueOptions<TPayload> & {
   db: DatabaseClient;
   pollIntervalMs: number;
+  logger?: Logger;
 };
 
 export class DbQueueService<TPayload> {
@@ -63,6 +65,7 @@ export class DbQueueService<TPayload> {
   private readonly handler: QueueHandler<TPayload>;
   private readonly onStateChange: QueueOptions<TPayload>["onStateChange"];
   private readonly workerInstanceId: string;
+  private readonly logger: Logger | null;
 
   private started = false;
   private closing = false;
@@ -94,6 +97,7 @@ export class DbQueueService<TPayload> {
     this.handler = options.handler;
     this.onStateChange = options.onStateChange;
     this.workerInstanceId = `${this.name}:${randomUUID()}`;
+    this.logger = options.logger ?? null;
   }
 
   async enqueue(input: QueueEnqueueInput<TPayload>): Promise<QueueEnqueueResult> {
@@ -590,8 +594,15 @@ export class DbQueueService<TPayload> {
           `,
           [jobId, this.name, this.jobTimeoutMs, this.workerInstanceId],
         )
-        .catch(() => {
-          // Keep handler execution authoritative; recovery will happen via lease expiry if needed.
+        .catch((heartbeatError) => {
+          // Heartbeat failure is non-fatal — lease expiry will handle recovery.
+          // Log at warn so persistent DB connectivity issues become visible.
+          this.logger?.warn("queue_heartbeat_failed", {
+            queue: this.name,
+            jobId,
+            message:
+              heartbeatError instanceof Error ? heartbeatError.message : String(heartbeatError),
+          });
         });
     }, intervalMs);
   }
@@ -736,8 +747,13 @@ export class DbQueueService<TPayload> {
 
     try {
       await this.onDeadLetter(event);
-    } catch (_error) {
-      // DLQ persistence must not crash the worker loop.
+    } catch (dlqError) {
+      // DLQ handler must not crash the worker loop, but we need visibility.
+      this.logger?.error("queue_dead_letter_handler_failed", {
+        queue: this.name,
+        jobId: job.id,
+        message: dlqError instanceof Error ? dlqError.message : String(dlqError),
+      });
     }
   }
 
