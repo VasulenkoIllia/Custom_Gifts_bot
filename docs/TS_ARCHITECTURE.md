@@ -52,6 +52,7 @@ src/
     runtime.ts
     server.ts
   config/
+    app-role.ts
     config.types.ts
     load-config.ts
     validate-config.ts
@@ -62,7 +63,7 @@ src/
       crm-client.ts
     db/
       postgres-client.ts
-      postgres-schema.ts
+      postgres-migrations.ts
     layout/
       layout-plan-builder.ts
       filename-builder.ts
@@ -76,7 +77,8 @@ src/
       qr-rules.ts
       spotify-code.ts
     queue/
-      queue-service.ts
+      db-queue.service.ts
+      queue-errors.ts
       queue-jobs.ts
       db-dead-letter-store.ts
     reactions/
@@ -96,6 +98,10 @@ src/
   workers/
     order-intake-worker.ts
     reaction-intake-worker.ts
+
+tests/
+  helpers/
+    in-memory-queue.ts
 ```
 
 ## 5. Ролі модулів
@@ -118,7 +124,8 @@ src/
 - `url-shortener`
   - скорочення URL перед QR (`lnk.ua` primary, `cutt.ly` fallback).
 - `queue`
-  - постановка задач, retry, DLQ, обмеження concurrency.
+  - продакшн: постановка задач, retry, DLQ і concurrency через `DbQueueService`.
+  - тести: ізольована `InMemoryQueueService` у `tests/helpers`.
 - `observability`
   - логи, метрики, warning/error notifications.
 

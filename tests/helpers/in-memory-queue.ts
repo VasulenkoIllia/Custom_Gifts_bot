@@ -5,15 +5,16 @@ import type {
   QueueJob,
   QueueOptions,
   QueueStats,
-} from "./queue.types";
-import { QueueClosedError, QueueOverflowError } from "./queue-errors";
-export { QueueClosedError, QueueOverflowError } from "./queue-errors";
+} from "../../src/modules/queue/queue.types";
+import { QueueClosedError, QueueOverflowError } from "../../src/modules/queue/queue-errors";
+
+export { QueueClosedError, QueueOverflowError } from "../../src/modules/queue/queue-errors";
 
 type InternalJob<TPayload> = QueueJob<TPayload> & {
   deadLettered: boolean;
 };
 
-export class QueueService<TPayload> {
+export class InMemoryQueueService<TPayload> {
   private readonly name: string;
   private readonly concurrency: number;
   private readonly maxQueueSize: number;
@@ -138,7 +139,7 @@ export class QueueService<TPayload> {
         error: error instanceof Error ? error.message : error ? String(error) : undefined,
         stats: this.getStats(),
       });
-    } catch (_error) {
+    } catch {
       // Queue processing must continue even if logging callback fails.
     }
   }
@@ -273,7 +274,7 @@ export class QueueService<TPayload> {
 
     try {
       await this.onDeadLetter(event);
-    } catch (_deadLetterError) {
+    } catch {
       // Queue should not crash when DLQ callback fails (e.g. DB/Telegram outage).
     }
   }

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { AppConfig } from "../../config/config.types";
+import { roleRequiresPdfReadiness } from "../../config/app-role";
 import type { DatabaseClient } from "../db/postgres-client";
 import type { QueueProducer } from "../queue/queue.types";
 import type { OrderIntakeJobPayload, ReactionIntakeJobPayload } from "../queue/queue-jobs";
@@ -122,7 +123,7 @@ export class RuntimeHealthService {
   }
 
   private async checkStorage(): Promise<Omit<HealthCheck, "latencyMs">> {
-    if (!requiresPdfReadiness(this.config.appRole)) {
+    if (!roleRequiresPdfReadiness(this.config.appRole)) {
       return {
         ok: true,
         skipped: true,
@@ -150,7 +151,7 @@ export class RuntimeHealthService {
   }
 
   private async checkDisk(): Promise<Omit<HealthCheck, "latencyMs">> {
-    if (!requiresPdfReadiness(this.config.appRole)) {
+    if (!roleRequiresPdfReadiness(this.config.appRole)) {
       return {
         ok: true,
         skipped: true,
@@ -192,7 +193,7 @@ export class RuntimeHealthService {
   }
 
   private async checkPdfDependency(): Promise<Omit<HealthCheck, "latencyMs">> {
-    if (!requiresPdfReadiness(this.config.appRole)) {
+    if (!roleRequiresPdfReadiness(this.config.appRole)) {
       return {
         ok: true,
         skipped: true,
@@ -218,10 +219,6 @@ export class RuntimeHealthService {
       availableBytes: Number(stats.bavail) * Number(stats.bsize),
     };
   }
-}
-
-function requiresPdfReadiness(role: AppConfig["appRole"]): boolean {
-  return role === "all" || role === "workers" || role === "order_worker";
 }
 
 async function probeGhostscript(timeoutMs: number): Promise<string> {

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import type { AppConfig } from "../config/config.types";
+import { roleHasOrderWorker, roleHasReactionWorker, roleHasReceiver } from "../config/app-role";
 import { OpsAlertService } from "../modules/alerts/ops-alert.service";
 import { CrmClient } from "../modules/crm/crm-client";
 import { DbRetentionService } from "../modules/db/db-retention.service";
@@ -75,18 +76,6 @@ type RuntimeServices = {
   storageRetentionService: StorageRetentionService;
   dbRetentionService: DbRetentionService;
 };
-
-function isReceiverRole(role: AppConfig["appRole"]): boolean {
-  return role === "all" || role === "receiver";
-}
-
-function isOrderWorkerRole(role: AppConfig["appRole"]): boolean {
-  return role === "all" || role === "workers" || role === "order_worker";
-}
-
-function isReactionWorkerRole(role: AppConfig["appRole"]): boolean {
-  return role === "all" || role === "workers" || role === "reaction_worker";
-}
 
 async function createCoreRuntimeDeps(config: AppConfig, logger: Logger): Promise<CoreRuntimeDeps> {
   const postgresClient = new PostgresClient({
@@ -380,7 +369,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     telegramRoutingConfig,
   });
 
-  if (isOrderWorkerRole(config.appRole)) {
+  if (roleHasOrderWorker(config.appRole)) {
     await startWorkerRetentionServices({
       config,
       storageRetentionService,
@@ -512,14 +501,14 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     },
   });
 
-  if (isOrderWorkerRole(config.appRole)) {
+  if (roleHasOrderWorker(config.appRole)) {
     orderQueue.start();
   }
-  if (isReactionWorkerRole(config.appRole)) {
+  if (roleHasReactionWorker(config.appRole)) {
     reactionQueue.start();
   }
 
-  const keycrmWebhookController = isReceiverRole(config.appRole)
+  const keycrmWebhookController = roleHasReceiver(config.appRole)
     ? new KeycrmWebhookController({
         logger,
         orderQueue,
@@ -528,7 +517,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
       })
     : undefined;
 
-  const telegramWebhookController = isReceiverRole(config.appRole)
+  const telegramWebhookController = roleHasReceiver(config.appRole)
     ? new TelegramWebhookController({
         logger,
         reactionQueue,

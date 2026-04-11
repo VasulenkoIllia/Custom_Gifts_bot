@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { QueueClosedError, QueueService } from "../src/modules/queue/queue-service";
+import { InMemoryQueueService, QueueClosedError } from "./helpers/in-memory-queue";
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -8,10 +8,10 @@ function wait(ms: number): Promise<void> {
   });
 }
 
-test("QueueService retries retryable jobs and completes successfully", async () => {
+test("InMemoryQueueService retries retryable jobs and completes successfully", async () => {
   let attempts = 0;
   const completion = new Promise<void>((resolve, reject) => {
-    const queue = new QueueService<{ value: string }>({
+    const queue = new InMemoryQueueService<{ value: string }>({
       name: "q_retry_success",
       concurrency: 1,
       maxQueueSize: 10,
@@ -47,10 +47,10 @@ test("QueueService retries retryable jobs and completes successfully", async () 
   assert.equal(attempts, 2);
 });
 
-test("QueueService sends non-retryable jobs to dead letter immediately", async () => {
+test("InMemoryQueueService sends non-retryable jobs to dead letter immediately", async () => {
   let deadLetterCalled = false;
   const deadLetter = new Promise<void>((resolve) => {
-    const queue = new QueueService<{ value: string }>({
+    const queue = new InMemoryQueueService<{ value: string }>({
       name: "q_dead_letter_now",
       concurrency: 1,
       maxQueueSize: 10,
@@ -79,10 +79,10 @@ test("QueueService sends non-retryable jobs to dead letter immediately", async (
   assert.equal(deadLetterCalled, true);
 });
 
-test("QueueService moves job to dead letter after retry limit", async () => {
+test("InMemoryQueueService moves job to dead letter after retry limit", async () => {
   let attempts = 0;
   const deadLetter = new Promise<void>((resolve) => {
-    const queue = new QueueService<{ value: string }>({
+    const queue = new InMemoryQueueService<{ value: string }>({
       name: "q_dead_letter_after_retry",
       concurrency: 1,
       maxQueueSize: 10,
@@ -115,8 +115,8 @@ test("QueueService moves job to dead letter after retry limit", async () => {
   await wait(5);
 });
 
-test("QueueService close waits for running job and rejects new enqueue", async () => {
-  const queue = new QueueService<{ value: string }>({
+test("InMemoryQueueService close waits for running job and rejects new enqueue", async () => {
+  const queue = new InMemoryQueueService<{ value: string }>({
     name: "q_close",
     concurrency: 1,
     maxQueueSize: 10,

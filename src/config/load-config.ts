@@ -1,6 +1,7 @@
 import type { AppConfig } from "./config.types";
 import fs from "node:fs";
 import path from "node:path";
+import { parseAppRole } from "./app-role";
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -64,22 +65,6 @@ function parseEmojiRenderMode(value: string | undefined): "font" | "apple_image"
 
 function parseTelegramForwardMode(value: string | undefined): "copy" | "forward" {
   return String(value ?? "copy").trim().toLowerCase() === "forward" ? "forward" : "copy";
-}
-
-function parseAppRole(
-  value: string | undefined,
-): "all" | "receiver" | "workers" | "order_worker" | "reaction_worker" {
-  const normalized = String(value ?? "all").trim().toLowerCase();
-  if (
-    normalized === "receiver" ||
-    normalized === "workers" ||
-    normalized === "order_worker" ||
-    normalized === "reaction_worker"
-  ) {
-    return normalized;
-  }
-
-  return "all";
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {

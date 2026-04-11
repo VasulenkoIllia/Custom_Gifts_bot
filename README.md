@@ -157,8 +157,10 @@ docker compose -f docker-compose.prod.yml --env-file .env.production exec receiv
 Головні документи:
 
 - [docs/README.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/README.md)
-- [docs/PROJECT_CONTROL.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/PROJECT_CONTROL.md)
+- [docs/TS_ARCHITECTURE.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/TS_ARCHITECTURE.md)
+- [docs/OPERATIONS.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/OPERATIONS.md)
 - [docs/RUNBOOK.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/RUNBOOK.md)
+- [docs/ARCHITECTURE_AUDIT_2026-04-11.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/ARCHITECTURE_AUDIT_2026-04-11.md)
 - [docs/SERVER_DEPLOY_CGBOT.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/SERVER_DEPLOY_CGBOT.md)
 - [docs/LOCAL_REAL_MODE_TESTING.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/LOCAL_REAL_MODE_TESTING.md)
 

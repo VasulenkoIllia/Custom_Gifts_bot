@@ -1,5 +1,7 @@
+import type { AppRole } from "./app-role";
+
 export type AppConfig = {
-  appRole: "all" | "receiver" | "workers" | "order_worker" | "reaction_worker";
+  appRole: AppRole;
   host: string;
   port: number;
   projectPhase: "stage_f_pdf_pipeline";

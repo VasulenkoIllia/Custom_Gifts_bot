@@ -1,11 +1,10 @@
 import type { AppConfig } from "./config.types";
 import path from "node:path";
+import { APP_ROLES, isAppRole } from "./app-role";
 
 export function validateConfig(config: AppConfig): void {
-  if (
-    !["all", "receiver", "workers", "order_worker", "reaction_worker"].includes(config.appRole)
-  ) {
-    throw new Error("APP_ROLE is invalid.");
+  if (!isAppRole(config.appRole)) {
+    throw new Error(`APP_ROLE is invalid. Expected one of: ${APP_ROLES.join(", ")}.`);
   }
 
   if (!config.host) {

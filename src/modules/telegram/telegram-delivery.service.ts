@@ -4,7 +4,6 @@ import type { TelegramDeliveryRecord } from "./db-telegram-delivery-store";
 import {
   sendOrderFilesToTelegram,
   type PreviewCaptionDetails,
-  type SendOrderFilesResult,
 } from "./telegram-client";
 
 type TelegramRequestOptions = {

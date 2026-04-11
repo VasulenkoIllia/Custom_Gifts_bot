@@ -6,7 +6,7 @@ import type {
   IdempotencyStore,
 } from "../src/modules/orders/order-idempotency";
 import type { OrderIntakeJobPayload } from "../src/modules/queue/queue-jobs";
-import { QueueService } from "../src/modules/queue/queue-service";
+import { InMemoryQueueService } from "./helpers/in-memory-queue";
 import { KeycrmWebhookController } from "../src/modules/webhook/keycrm-webhook.controller";
 import type { Logger } from "../src/observability/logger";
 
@@ -53,12 +53,12 @@ class InMemoryIdempotencyStore implements IdempotencyStore {
 
 test("KeycrmWebhookController deduplicates duplicate webhook events", async () => {
   const logger = createNoopLogger();
-  const queue = new QueueService<OrderIntakeJobPayload>({
+  const queue = new InMemoryQueueService<OrderIntakeJobPayload>({
     name: "order_intake_test",
     concurrency: 1,
     maxQueueSize: 10,
     jobTimeoutMs: 5_000,
-      handler: async () => undefined,
+    handler: async () => undefined,
   });
 
   const idempotencyStore = new InMemoryIdempotencyStore();
