@@ -6,7 +6,10 @@
 - persistent DLQ (PostgreSQL table `dead_letters`);
 - ops-alert повідомлення в окремий Telegram чат (`TELEGRAM_OPS_CHAT_ID`);
 - failure-status flow:
-  - deterministic `missing file` до PDF pipeline -> `missingFileStatusId` без retry / DLQ;
+  - deterministic `missing file` до PDF pipeline:
+    - немає `_tib_design_link_1`, але є preview -> тільки alert `Не вдалося сформувати PDF`, без зміни CRM-статусу;
+    - немає `_tib_design_link_1` і немає preview -> `missingFileStatusId` без retry / DLQ;
+    - немає тексту engraving/sticker -> `missingFileStatusId` без retry / DLQ;
   - deterministic `source unavailable` (`_tib_design_link_1` є, але CDN дає `403/404`) -> без retry / DLQ і без зміни CRM-статусу;
   - `pdf_generation` -> `missingFileStatusId`;
   - `telegram_delivery` -> `missingTelegramStatusId`;
@@ -17,7 +20,9 @@
 - `receiver` кладе order у `order_intake`
 - `order-worker` тягне order з CRM і будує `layout plan`
 - далі можливі 3 ранні сценарії:
-  - немає `_tib_design_link_1` -> одразу `40 / Без файлу`
+  - немає `_tib_design_link_1`:
+    - якщо є `preview` -> CRM статус не змінюємо, тільки шлемо alert
+    - якщо `preview` немає -> одразу `40 / Без файлу`
   - немає тексту engraving/sticker -> одразу `40 / Без файлу`
   - source URL є, але CDN/TeeInBlue дає `403/404` -> CRM статус не змінюємо, тільки шлемо alert
 - якщо ранніх блокерів немає, генеруємо PDF
@@ -106,7 +111,8 @@
 - не запускає PDF pipeline;
 - не робить retry;
 - не створює запис у `dead_letters`;
-- одразу ставить CRM статус `Без файлу` (`40`);
+- якщо немає `_tib_design_link_1`, але є `preview` -> CRM статус не змінює;
+- в інших deterministic missing-file кейсах ставить CRM статус `Без файлу` (`40`);
 - відправляє `error` alert у Telegram processing і ops chat.
 
 ## 5.2 Deterministic source-unavailable path
@@ -123,7 +129,17 @@
 - не відправляє PDF у Telegram;
 - відправляє `error` alert у Telegram processing і ops chat з деталями order та source URL.
 
-## 5.3 White cleanup
+## 5.3 Матриця сценаріїв "PDF не сформовано"
+| Сценарій | Що робить система | CRM статус | Retry / DLQ | Alert |
+|---|---|---|---|---|
+| `webhook.status_id != materialsStatusId` або `order.status_id != materialsStatusId` | Intake job `skip`, PDF pipeline не стартує | Без змін | Ні | Ні (тільки `info` лог) |
+| Немає `_tib_design_link_1` і **немає** preview | Зупинка до PDF pipeline | `missingFileStatusId` (`40`) | Ні | `error` в processing + ops |
+| Немає `_tib_design_link_1`, але preview **є** | Зупинка до PDF pipeline | Без змін | Ні | `error` в processing + ops (`Не вдалося сформувати PDF`) |
+| Немає тексту engraving/sticker | Зупинка до PDF pipeline | `missingFileStatusId` (`40`) | Ні | `error` в processing + ops |
+| `_tib_design_link_1` є, але CDN/TeeInBlue повертає `403/404` | PDF pipeline зупиняється як deterministic `source unavailable` | Без змін | Ні | `error` в processing + ops (`Не вдалося сформувати PDF`) |
+| Інші помилки PDF (`pdf_generation`) | Worker кидає `OrderProcessingError`, queue робить retry | На retry-етапі без змін; при DLQ -> `missingFileStatusId` (`40`) | Так | При DLQ: `critical` в ops (`Job moved to DLQ`) |
+
+## 5.4 White cleanup
 Поточний TS pipeline повернутий до legacy-aggressive preset, бо м'якші значення іноді лишали залишковий білий:
 - `whiteThreshold = 252`
 - `whiteMaxSaturation = 0.03`
@@ -231,9 +247,9 @@
   - `dead_letters`
 
 Поточний стан:
-- queue в реалізації процесна (in-memory), а не broker-based;
+- queue зберігається в PostgreSQL (`queue_jobs`) з lease-based processing і recovery;
 - recovery забезпечується повторними webhook з CRM + idempotency в PostgreSQL;
-- після restart сервісу не втрачається операційний state, але активні in-flight job запускаються заново через повторний webhook.
+- після restart сервісу не втрачається операційний state, а прострочені `running` job повертаються через lease recovery.
 
 ## 13. Теоретичні проблеми і вузькі місця
 - дубльовані webhook з CRM

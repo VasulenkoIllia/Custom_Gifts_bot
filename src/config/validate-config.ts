@@ -24,6 +24,21 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("DATABASE_POOL_MAX is invalid.");
   }
 
+  if (
+    !Number.isFinite(config.databasePoolConnectionTimeoutMs) ||
+    config.databasePoolConnectionTimeoutMs <= 0
+  ) {
+    throw new Error("DATABASE_POOL_CONNECTION_TIMEOUT_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.databasePoolIdleTimeoutMs) || config.databasePoolIdleTimeoutMs <= 0) {
+    throw new Error("DATABASE_POOL_IDLE_TIMEOUT_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.databaseQueryTimeoutMs) || config.databaseQueryTimeoutMs <= 0) {
+    throw new Error("DATABASE_QUERY_TIMEOUT_MS is invalid.");
+  }
+
   if (typeof config.databaseAutoMigrateOnBoot !== "boolean") {
     throw new Error("DATABASE_AUTO_MIGRATE_ON_BOOT is invalid.");
   }
@@ -228,6 +243,10 @@ export function validateConfig(config: AppConfig): void {
 
   if (!Number.isFinite(config.dbCleanupIntervalMs) || config.dbCleanupIntervalMs <= 0) {
     throw new Error("DB_CLEANUP_INTERVAL_MS is invalid.");
+  }
+
+  if (!Number.isFinite(config.dbCleanupBatchSize) || config.dbCleanupBatchSize <= 0) {
+    throw new Error("DB_CLEANUP_BATCH_SIZE is invalid.");
   }
 
   if (!Number.isFinite(config.queueJobRetentionHours) || config.queueJobRetentionHours <= 0) {

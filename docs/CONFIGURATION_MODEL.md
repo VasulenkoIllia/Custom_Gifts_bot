@@ -16,6 +16,9 @@
 - `KEYCRM_TOKEN`
 - `DATABASE_URL`
 - `DATABASE_POOL_MAX`
+- `DATABASE_POOL_CONNECTION_TIMEOUT_MS`
+- `DATABASE_POOL_IDLE_TIMEOUT_MS`
+- `DATABASE_QUERY_TIMEOUT_MS`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID` (bootstrap seed для `processing`)
 - `TELEGRAM_MESSAGE_THREAD_ID` (bootstrap seed для `processing`)
@@ -53,6 +56,8 @@
 - `OUTPUT_RETENTION_HOURS`
 - `TEMP_RETENTION_HOURS`
 - `CLEANUP_INTERVAL_MS`
+- `DB_CLEANUP_INTERVAL_MS`
+- `DB_CLEANUP_BATCH_SIZE`
 
 ## 4. Що має жити в business config
 У БД:
@@ -120,7 +125,7 @@
 Примітка:
 - `allowedEmojis` описує whitelist символів, які приймаються webhook-парсером.
 - Для уникнення неявної логіки кожен stage має мати явний `emoji`.
-- Для backward compatibility stage може приймати legacy-поле `heartCount`, але цільовий формат - `countThreshold`.
+- Stage приймає тільки `countThreshold`; legacy-поле `heartCount` більше не підтримується.
 - Файл використовується як bootstrap seed. Після першого успішного запуску runtime читає rules із PostgreSQL таблиць `reaction_rule_config` та `reaction_stage_rules`.
 
 ## 7. `product-code-rules.json`

@@ -30,7 +30,7 @@ test("normalizeTelegramUpdates ignores non-reaction Telegram updates", () => {
   assert.equal(updates[0]?.updateId, 1002);
   assert.equal(updates[0]?.chatId, "-1003710886298");
   assert.equal(updates[0]?.messageId, 42);
-  assert.equal(updates[0]?.heartCount, 1);
+  assert.deepEqual(updates[0]?.emojiCounts, { "❤️": 1 });
 });
 
 test("normalizeTelegramUpdates accepts direct message_reaction updates for tracked emojis", () => {
@@ -55,7 +55,6 @@ test("normalizeTelegramUpdates accepts direct message_reaction updates for track
   assert.equal(updates[0]?.chatId, "-1003710886298");
   assert.equal(updates[0]?.messageId, 77);
   assert.deepEqual(updates[0]?.emojiCounts, { "❤️": 1 });
-  assert.equal(updates[0]?.heartCount, 1);
 });
 
 test("normalizeTelegramUpdates keeps direct reaction removals with zero tracked counts", () => {
@@ -80,5 +79,4 @@ test("normalizeTelegramUpdates keeps direct reaction removals with zero tracked 
   assert.equal(updates[0]?.chatId, "-1003710886298");
   assert.equal(updates[0]?.messageId, 78);
   assert.deepEqual(updates[0]?.emojiCounts, {});
-  assert.equal(updates[0]?.heartCount, 0);
 });

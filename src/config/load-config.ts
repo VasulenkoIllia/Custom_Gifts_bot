@@ -101,6 +101,12 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     projectPhase: "stage_f_pdf_pipeline",
     databaseUrl: String(env.DATABASE_URL ?? "").trim(),
     databasePoolMax: parsePositiveInteger(env.DATABASE_POOL_MAX, 10),
+    databasePoolConnectionTimeoutMs: parsePositiveInteger(
+      env.DATABASE_POOL_CONNECTION_TIMEOUT_MS,
+      5_000,
+    ),
+    databasePoolIdleTimeoutMs: parsePositiveInteger(env.DATABASE_POOL_IDLE_TIMEOUT_MS, 30_000),
+    databaseQueryTimeoutMs: parsePositiveInteger(env.DATABASE_QUERY_TIMEOUT_MS, 30_000),
     databaseAutoMigrateOnBoot: parseBoolean(env.DATABASE_AUTO_MIGRATE_ON_BOOT, false),
     databaseMigrationsDir: path.resolve(
       process.cwd(),
@@ -188,6 +194,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     tempRetentionHours: parsePositiveInteger(env.TEMP_RETENTION_HOURS, 24),
     cleanupIntervalMs: parsePositiveInteger(env.CLEANUP_INTERVAL_MS, 60 * 60 * 1000),
     dbCleanupIntervalMs: parsePositiveInteger(env.DB_CLEANUP_INTERVAL_MS, 60 * 60 * 1000),
+    dbCleanupBatchSize: parsePositiveInteger(env.DB_CLEANUP_BATCH_SIZE, 1_000),
     queueJobRetentionHours: parsePositiveInteger(env.QUEUE_JOB_RETENTION_HOURS, 72),
     telegramDeliveryRetentionHours: parsePositiveInteger(
       env.TELEGRAM_DELIVERY_RETENTION_HOURS,

@@ -15,34 +15,34 @@ import type { ShortenUrlResult, UrlShortenerService } from "../url-shortener/sho
 import type { GeneratePdfMaterialsInput, PdfGeneratedFile, PdfPipelineResult } from "./pdf.types";
 import { generateMaterialFiles, enforceOffWhiteInPdf } from "./material-generator";
 
-type LegacyLayoutMaterial = {
+type MaterialGeneratorLayoutMaterial = {
   type: "poster" | "engraving" | "sticker";
   code: string;
-  product_id: number | null;
-  source_url: string | null;
+  productId: number | null;
+  sourceUrl: string | null;
   text: string | null;
   format: "A5" | "A4" | null;
-  stand_type: "W" | "WW" | "MWW" | "C" | "K" | null;
+  standType: "W" | "WW" | "MWW" | "C" | "K" | null;
   index: number;
   total: number;
   filename: string;
 };
 
-type LegacyLayoutPlan = {
-  order_number: string;
+type MaterialGeneratorLayoutPlan = {
+  orderNumber: string;
   urgent: boolean;
   flags: string[];
   notes: string[];
-  preview_images: string[];
+  previewImages: string[];
   qr: {
     requested: boolean;
-    original_url: string | null;
-    short_url: string | null;
+    originalUrl: string | null;
+    shortUrl: string | null;
     url: string | null;
     valid: boolean;
-    should_generate: boolean;
+    shouldGenerate: boolean;
   };
-  materials: LegacyLayoutMaterial[];
+  materials: MaterialGeneratorLayoutMaterial[];
 };
 
 type CreatePdfPipelineServiceParams = {
@@ -83,7 +83,7 @@ type QrDecisionWarningSource = {
   decision: Pick<QrCodeDecision, "strategy" | "reason">;
 };
 
-type LegacyLayoutPlanOptions = {
+type MaterialGeneratorLayoutPlanOptions = {
   effectiveQrUrl?: string | null;
   shortQrUrl?: string | null;
 };
@@ -95,36 +95,25 @@ type QrUrlResolution = {
   warnings: string[];
 };
 
-export function toLegacyLayoutPlan(
+export function toMaterialGeneratorLayoutPlan(
   layoutPlan: LayoutPlan,
-  options: LegacyLayoutPlanOptions = {},
-): LegacyLayoutPlan {
+  options: MaterialGeneratorLayoutPlanOptions = {},
+): MaterialGeneratorLayoutPlan {
   return {
-    order_number: layoutPlan.orderNumber,
+    orderNumber: layoutPlan.orderNumber,
     urgent: layoutPlan.urgent,
-    flags: layoutPlan.flags,
-    notes: layoutPlan.notes,
-    preview_images: layoutPlan.previewImages,
+    flags: [...layoutPlan.flags],
+    notes: [...layoutPlan.notes],
+    previewImages: [...layoutPlan.previewImages],
     qr: {
       requested: layoutPlan.qr.requested,
-      original_url: layoutPlan.qr.originalUrl,
-      short_url: options.shortQrUrl ?? null,
+      originalUrl: layoutPlan.qr.originalUrl,
+      shortUrl: options.shortQrUrl ?? null,
       url: options.effectiveQrUrl ?? layoutPlan.qr.url,
       valid: layoutPlan.qr.valid,
-      should_generate: layoutPlan.qr.shouldGenerate,
+      shouldGenerate: layoutPlan.qr.shouldGenerate,
     },
-    materials: layoutPlan.materials.map((item) => ({
-      type: item.type,
-      code: item.code,
-      product_id: item.productId,
-      source_url: item.sourceUrl,
-      text: item.text,
-      format: item.format,
-      stand_type: item.standType,
-      index: item.index,
-      total: item.total,
-      filename: item.filename,
-    })),
+    materials: layoutPlan.materials.map((item) => ({ ...item })),
   };
 }
 
@@ -272,22 +261,22 @@ export class PdfPipelineService {
       posterQrDecisions,
       orderId,
     );
-    const layoutPlan = toLegacyLayoutPlan(input.layoutPlan, {
+    const materialGeneratorLayoutPlan = toMaterialGeneratorLayoutPlan(input.layoutPlan, {
       effectiveQrUrl: qrUrlResolution.url,
       shortQrUrl: qrUrlResolution.shortUrl,
     });
     // QR embedding is executed in this TS layer per poster SKU/profile decision.
-    layoutPlan.qr.should_generate = false;
+    materialGeneratorLayoutPlan.qr.shouldGenerate = false;
 
     this.logger.info("pdf_pipeline_started", {
       orderId,
-      materials: layoutPlan.materials.length,
+      materials: materialGeneratorLayoutPlan.materials.length,
       colorSpace: this.colorSpace,
       qrPlan: this.buildQrPlanCounters(posterQrDecisions),
     });
 
     const result = await generateMaterialFiles({
-      layoutPlan,
+      layoutPlan: materialGeneratorLayoutPlan,
       outputRoot: this.outputRoot,
       orderId,
       fontPath: this.fontPath,

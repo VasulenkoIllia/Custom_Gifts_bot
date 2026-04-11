@@ -79,6 +79,9 @@ async function main(): Promise<void> {
   const client = new PostgresClient({
     connectionString: readDatabaseUrl(),
     maxPoolSize: readDatabasePoolMax(),
+    connectionTimeoutMs: 5_000,
+    idleTimeoutMs: 30_000,
+    queryTimeoutMs: 30_000,
   });
 
   try {

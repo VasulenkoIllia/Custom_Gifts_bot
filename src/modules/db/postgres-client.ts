@@ -16,15 +16,23 @@ export type DatabaseClient = {
 type CreatePostgresClientParams = {
   connectionString: string;
   maxPoolSize: number;
+  connectionTimeoutMs: number;
+  idleTimeoutMs: number;
+  queryTimeoutMs: number;
 };
 
 export class PostgresClient implements DatabaseClient {
   private readonly pool: Pool;
+  private readonly queryTimeoutMs: number;
 
   constructor(params: CreatePostgresClientParams) {
+    this.queryTimeoutMs = Math.max(1_000, Math.floor(params.queryTimeoutMs));
     this.pool = new Pool({
       connectionString: params.connectionString,
       max: Math.max(1, Math.floor(params.maxPoolSize)),
+      connectionTimeoutMillis: Math.max(1_000, Math.floor(params.connectionTimeoutMs)),
+      idleTimeoutMillis: Math.max(1_000, Math.floor(params.idleTimeoutMs)),
+      statement_timeout: this.queryTimeoutMs,
     });
   }
 
@@ -32,7 +40,11 @@ export class PostgresClient implements DatabaseClient {
     text: string,
     params: ReadonlyArray<unknown> = [],
   ): Promise<DbQueryResult<TRow>> {
-    const result = await this.pool.query(text, [...params]);
+    const result = await withTimeout(
+      this.pool.query(text, [...params]),
+      this.queryTimeoutMs,
+      "Postgres query timeout.",
+    );
     return {
       rows: result.rows as TRow[],
       rowCount: result.rowCount ?? 0,
@@ -49,12 +61,16 @@ export class PostgresClient implements DatabaseClient {
     const client = await this.pool.connect();
 
     try {
-      await client.query("BEGIN");
-      const result = await callback(createTransactionClient(client));
-      await client.query("COMMIT");
+      await withTimeout(client.query("BEGIN"), this.queryTimeoutMs, "Postgres BEGIN timeout.");
+      const result = await callback(createTransactionClient(client, this.queryTimeoutMs));
+      await withTimeout(client.query("COMMIT"), this.queryTimeoutMs, "Postgres COMMIT timeout.");
       return result;
     } catch (error) {
-      await client.query("ROLLBACK").catch(() => {});
+      await withTimeout(
+        client.query("ROLLBACK"),
+        this.queryTimeoutMs,
+        "Postgres ROLLBACK timeout.",
+      ).catch(() => {});
       throw error;
     } finally {
       client.release();
@@ -62,13 +78,17 @@ export class PostgresClient implements DatabaseClient {
   }
 }
 
-function createTransactionClient(client: PoolClient): DatabaseClient {
+function createTransactionClient(client: PoolClient, queryTimeoutMs: number): DatabaseClient {
   return {
     query: async <TRow = Record<string, unknown>>(
       text: string,
       params: ReadonlyArray<unknown> = [],
     ): Promise<DbQueryResult<TRow>> => {
-      const result = await client.query(text, [...params]);
+      const result = await withTimeout(
+        client.query(text, [...params]),
+        queryTimeoutMs,
+        "Postgres transaction query timeout.",
+      );
       return {
         rows: result.rows as TRow[],
         rowCount: result.rowCount ?? 0,
@@ -76,4 +96,22 @@ function createTransactionClient(client: PoolClient): DatabaseClient {
     },
     close: async () => undefined,
   };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(message));
+    }, Math.max(1_000, Math.floor(timeoutMs)));
+
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
 }

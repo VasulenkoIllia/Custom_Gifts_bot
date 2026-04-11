@@ -368,7 +368,7 @@
   - для Spotify SKU + Spotify URL вбудовується Spotify code;
 - QR/Spotify застосовується per-poster (а не глобально на весь order) у TS post-processing;
 - після вбудовування QR/Spotify для `CMYK` виконується повторна CMYK-конверсія постера;
-- додано unit test на mapping `LayoutPlan -> legacy layout`.
+- додано unit test на mapping `LayoutPlan -> material generator payload`.
 
 Програмна перевірка:
 - smoke tests по PDF fixtures;

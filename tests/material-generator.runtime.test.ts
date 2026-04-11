@@ -25,27 +25,27 @@ const { PNG } = require("pngjs") as {
 const materialGeneratorRuntime = require("../src/modules/pdf/material-generator.js") as {
   generateMaterialFiles: (input: {
     layoutPlan: {
-      order_number: string;
+      orderNumber: string;
       urgent: boolean;
       flags: string[];
       notes: string[];
-      preview_images: string[];
+      previewImages: string[];
       qr: {
         requested: boolean;
         valid: boolean;
-        should_generate: boolean;
-        original_url: string | null;
-        short_url: string | null;
+        shouldGenerate: boolean;
+        originalUrl: string | null;
+        shortUrl: string | null;
         url: string | null;
       };
       materials: Array<{
         type: "poster" | "engraving" | "sticker";
         code: string;
-        product_id: number | null;
-        source_url: string | null;
+        productId: number | null;
+        sourceUrl: string | null;
         text: string | null;
         format: "A5" | "A4" | null;
-        stand_type: "W" | "WW" | "MWW" | "C" | "K" | null;
+        standType: "W" | "WW" | "MWW" | "C" | "K" | null;
         index: number;
         total: number;
         filename: string;
@@ -259,28 +259,28 @@ test("generateMaterialFiles preserves soft mask for posters with internal transp
 
   const result = await materialGeneratorRuntime.generateMaterialFiles({
     layoutPlan: {
-      order_number: "test-29061",
+      orderNumber: "test-29061",
       urgent: false,
       flags: [],
       notes: [],
-      preview_images: [],
+      previewImages: [],
       qr: {
         requested: false,
         valid: false,
-        should_generate: false,
-        original_url: null,
-        short_url: null,
+        shouldGenerate: false,
+        originalUrl: null,
+        shortUrl: null,
         url: null,
       },
       materials: [
         {
           type: "poster",
           code: "AA5",
-          product_id: 1,
-          source_url: await createTransparentPosterDataUrl(),
+          productId: 1,
+          sourceUrl: await createTransparentPosterDataUrl(),
           text: null,
           format: "A5",
-          stand_type: null,
+          standType: null,
           index: 1,
           total: 1,
           filename: "TEST_AA5_1_1",
@@ -344,28 +344,28 @@ test("generateMaterialFiles does not emit apple emoji warning when text has no e
 
   const result = await materialGeneratorRuntime.generateMaterialFiles({
     layoutPlan: {
-      order_number: "test-no-emoji",
+      orderNumber: "test-no-emoji",
       urgent: false,
       flags: [],
       notes: [],
-      preview_images: [],
+      previewImages: [],
       qr: {
         requested: false,
         valid: false,
-        should_generate: false,
-        original_url: null,
-        short_url: null,
+        shouldGenerate: false,
+        originalUrl: null,
+        shortUrl: null,
         url: null,
       },
       materials: [
         {
           type: "sticker",
           code: "S",
-          product_id: 1,
-          source_url: null,
+          productId: 1,
+          sourceUrl: null,
           text: "Без емодзі",
           format: null,
-          stand_type: null,
+          standType: null,
           index: 1,
           total: 1,
           filename: "TEST_S_1_1",
@@ -411,28 +411,28 @@ test("generateMaterialFiles warns about missing apple emoji source only when tex
 
   const result = await materialGeneratorRuntime.generateMaterialFiles({
     layoutPlan: {
-      order_number: "test-with-emoji",
+      orderNumber: "test-with-emoji",
       urgent: false,
       flags: [],
       notes: [],
-      preview_images: [],
+      previewImages: [],
       qr: {
         requested: false,
         valid: false,
-        should_generate: false,
-        original_url: null,
-        short_url: null,
+        shouldGenerate: false,
+        originalUrl: null,
+        shortUrl: null,
         url: null,
       },
       materials: [
         {
           type: "sticker",
           code: "S",
-          product_id: 1,
-          source_url: null,
+          productId: 1,
+          sourceUrl: null,
           text: "Тест 🥰",
           format: null,
-          stand_type: null,
+          standType: null,
           index: 1,
           total: 1,
           filename: "TEST_S_1_1",

@@ -2,24 +2,25 @@ import fs from "node:fs/promises";
 import type { AppConfig } from "../config/config.types";
 import { OpsAlertService } from "../modules/alerts/ops-alert.service";
 import { CrmClient } from "../modules/crm/crm-client";
-import { PostgresClient } from "../modules/db/postgres-client";
 import { DbRetentionService } from "../modules/db/db-retention.service";
+import { PostgresClient } from "../modules/db/postgres-client";
 import {
   applyPostgresMigrations,
   assertPostgresMigrationsApplied,
 } from "../modules/db/postgres-migrations";
+import { resolveRetryableError } from "../modules/errors/worker-errors";
 import { RuntimeHealthService } from "../modules/health/runtime-health.service";
 import { LayoutPlanBuilder } from "../modules/layout/layout-plan-builder";
 import { loadProductCodeRules } from "../modules/layout/product-code-rules";
 import { DbIdempotencyStore } from "../modules/orders/order-idempotency";
 import { PdfPipelineService } from "../modules/pdf/pdf-pipeline.service";
 import { DbDeadLetterStore } from "../modules/queue/db-dead-letter-store";
+import { DbQueueService } from "../modules/queue/db-queue.service";
+import type { OrderIntakeJobPayload, ReactionIntakeJobPayload } from "../modules/queue/queue-jobs";
+import type { QueueProducer, QueueStateEvent } from "../modules/queue/queue.types";
 import { loadQrRules } from "../modules/qr/qr-rules";
 import { DbReactionStatusRulesStore } from "../modules/reactions/db-reaction-status-rules-store";
 import { loadReactionStatusRules } from "../modules/reactions/reaction-status-rules";
-import type { OrderIntakeJobPayload, ReactionIntakeJobPayload } from "../modules/queue/queue-jobs";
-import { DbQueueService } from "../modules/queue/db-queue.service";
-import type { QueueProducer } from "../modules/queue/queue.types";
 import { StorageRetentionService } from "../modules/storage/storage-retention.service";
 import { DbForwardingBatchStore } from "../modules/telegram/db-forwarding-batch-store";
 import { DbForwardingEventStore } from "../modules/telegram/db-forwarding-event-store";
@@ -28,10 +29,10 @@ import { DbTelegramMessageMapStore } from "../modules/telegram/db-telegram-messa
 import { DbTelegramRoutingConfigStore } from "../modules/telegram/db-telegram-routing-config-store";
 import { TelegramDeliveryService } from "../modules/telegram/telegram-delivery.service";
 import { TelegramForwardingService } from "../modules/telegram/telegram-forwarding.service";
+import type { TelegramRoutingConfig } from "../modules/telegram/telegram-routing-config";
 import { UrlShortenerService } from "../modules/url-shortener/shortener-service";
 import { KeycrmWebhookController } from "../modules/webhook/keycrm-webhook.controller";
 import { TelegramWebhookController } from "../modules/webhook/telegram-webhook.controller";
-import { resolveRetryableError } from "../modules/errors/worker-errors";
 import type { Logger } from "../observability/logger";
 import { createOrderIntakeWorker } from "../workers/order-intake-worker";
 import { createReactionIntakeWorker } from "../workers/reaction-intake-worker";
@@ -50,6 +51,31 @@ export type AppRuntime = {
   shutdown: () => Promise<void>;
 };
 
+type CoreRuntimeDeps = {
+  postgresClient: PostgresClient;
+  crmClient: CrmClient;
+  idempotencyStore: DbIdempotencyStore;
+  deadLetterStore: DbDeadLetterStore;
+};
+
+type RuntimeBusinessConfig = {
+  layoutPlanBuilder: LayoutPlanBuilder;
+  qrRules: Awaited<ReturnType<typeof loadQrRules>>;
+  reactionStatusRules: Awaited<ReturnType<typeof loadReactionStatusRules>>;
+  telegramRoutingConfig: TelegramRoutingConfig;
+};
+
+type RuntimeServices = {
+  opsAlertService: OpsAlertService;
+  processingAlertService: OpsAlertService;
+  telegramMessageMapStore: DbTelegramMessageMapStore;
+  telegramForwardingService: TelegramForwardingService;
+  telegramDeliveryService: TelegramDeliveryService;
+  pdfPipelineService: PdfPipelineService;
+  storageRetentionService: StorageRetentionService;
+  dbRetentionService: DbRetentionService;
+};
+
 function isReceiverRole(role: AppConfig["appRole"]): boolean {
   return role === "all" || role === "receiver";
 }
@@ -62,11 +88,15 @@ function isReactionWorkerRole(role: AppConfig["appRole"]): boolean {
   return role === "all" || role === "workers" || role === "reaction_worker";
 }
 
-export async function createRuntime(config: AppConfig, logger: Logger): Promise<AppRuntime> {
+async function createCoreRuntimeDeps(config: AppConfig, logger: Logger): Promise<CoreRuntimeDeps> {
   const postgresClient = new PostgresClient({
     connectionString: config.databaseUrl,
     maxPoolSize: config.databasePoolMax,
+    connectionTimeoutMs: config.databasePoolConnectionTimeoutMs,
+    idleTimeoutMs: config.databasePoolIdleTimeoutMs,
+    queryTimeoutMs: config.databaseQueryTimeoutMs,
   });
+
   if (config.databaseAutoMigrateOnBoot) {
     await applyPostgresMigrations({
       client: postgresClient,
@@ -92,15 +122,31 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
 
   const idempotencyStore = new DbIdempotencyStore(postgresClient, config.idempotencyMaxEntries);
   await idempotencyStore.init();
+
   const deadLetterStore = new DbDeadLetterStore(postgresClient);
   await deadLetterStore.init();
+
+  return {
+    postgresClient,
+    crmClient,
+    idempotencyStore,
+    deadLetterStore,
+  };
+}
+
+async function createRuntimeBusinessConfig(
+  config: AppConfig,
+  postgresClient: PostgresClient,
+): Promise<RuntimeBusinessConfig> {
   const productCodeRules = await loadProductCodeRules(config.productCodeRulesPath);
   const qrRules = await loadQrRules(config.qrRulesPath);
+
   const reactionSeed = await loadReactionStatusRules(config.reactionStatusRulesPath);
   const reactionStatusRulesStore = new DbReactionStatusRulesStore(postgresClient);
   await reactionStatusRulesStore.init();
   await reactionStatusRulesStore.seedIfEmpty(reactionSeed);
   const reactionStatusRules = await reactionStatusRulesStore.load();
+
   const telegramRoutingStore = new DbTelegramRoutingConfigStore(postgresClient);
   await telegramRoutingStore.init();
   await telegramRoutingStore.seedIfEmpty({
@@ -121,7 +167,24 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     },
   });
   const telegramRoutingConfig = await telegramRoutingStore.load();
-  const layoutPlanBuilder = new LayoutPlanBuilder(productCodeRules);
+
+  return {
+    layoutPlanBuilder: new LayoutPlanBuilder(productCodeRules),
+    qrRules,
+    reactionStatusRules,
+    telegramRoutingConfig,
+  };
+}
+
+async function createRuntimeServices(params: {
+  config: AppConfig;
+  logger: Logger;
+  postgresClient: PostgresClient;
+  qrRules: Awaited<ReturnType<typeof loadQrRules>>;
+  telegramRoutingConfig: TelegramRoutingConfig;
+}): Promise<RuntimeServices> {
+  const { config, logger, postgresClient, qrRules, telegramRoutingConfig } = params;
+
   const opsAlertService = new OpsAlertService({
     botToken: config.telegramBotToken,
     chatId: telegramRoutingConfig.destinations.ops.chatId,
@@ -131,6 +194,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     retryBaseMs: config.opsAlertRetryBaseMs,
     dedupeWindowMs: config.opsAlertDedupeWindowMs,
   });
+
   const processingAlertService = new OpsAlertService({
     botToken: config.telegramBotToken,
     chatId: telegramRoutingConfig.destinations.processing.chatId,
@@ -140,17 +204,22 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     retryBaseMs: config.opsAlertRetryBaseMs,
     dedupeWindowMs: config.opsAlertDedupeWindowMs,
   });
+
   const telegramMessageMapStore = new DbTelegramMessageMapStore(
     postgresClient,
     config.telegramMessageMapMaxEntries,
   );
   await telegramMessageMapStore.init();
+
   const forwardingEventStore = new DbForwardingEventStore(postgresClient);
   await forwardingEventStore.init();
+
   const telegramDeliveryStore = new DbTelegramDeliveryStore(postgresClient);
   await telegramDeliveryStore.init();
+
   const forwardingBatchStore = new DbForwardingBatchStore(postgresClient);
   await forwardingBatchStore.init();
+
   const telegramDeliveryService = new TelegramDeliveryService({
     botToken: config.telegramBotToken,
     chatId: telegramRoutingConfig.destinations.processing.chatId,
@@ -163,6 +232,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     deliveryStore: telegramDeliveryStore,
     leaseTtlMs: config.queueJobTimeoutMs,
   });
+
   const telegramForwardingService = new TelegramForwardingService({
     botToken: config.telegramBotToken,
     targetChatId: telegramRoutingConfig.destinations.orders.chatId,
@@ -177,6 +247,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     batchStore: forwardingBatchStore,
     leaseTtlMs: config.queueJobTimeoutMs,
   });
+
   const urlShortenerService = new UrlShortenerService({
     timeoutMs: config.shortenerRequestTimeoutMs,
     retries: config.shortenerRequestRetries,
@@ -184,6 +255,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     lnkUaBearerToken: config.lnkUaBearerToken,
     cuttlyApiKey: config.cuttlyApiKey,
   });
+
   const pdfPipelineService = new PdfPipelineService({
     logger,
     qrRules,
@@ -221,6 +293,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
       },
     },
   });
+
   const storageRetentionService = new StorageRetentionService({
     logger,
     outputDir: config.outputDir,
@@ -229,25 +302,95 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
     tempRetentionHours: config.tempRetentionHours,
     cleanupIntervalMs: config.cleanupIntervalMs,
   });
+
   const dbRetentionService = new DbRetentionService({
     db: postgresClient,
     logger,
     cleanupIntervalMs: config.dbCleanupIntervalMs,
+    cleanupBatchSize: config.dbCleanupBatchSize,
     queueJobRetentionHours: config.queueJobRetentionHours,
     telegramDeliveryRetentionHours: config.telegramDeliveryRetentionHours,
     forwardingBatchRetentionHours: config.forwardingBatchRetentionHours,
     deadLetterRetentionHours: config.deadLetterRetentionHours,
   });
+
+  return {
+    opsAlertService,
+    processingAlertService,
+    telegramMessageMapStore,
+    telegramForwardingService,
+    telegramDeliveryService,
+    pdfPipelineService,
+    storageRetentionService,
+    dbRetentionService,
+  };
+}
+
+async function startWorkerRetentionServices(params: {
+  config: AppConfig;
+  storageRetentionService: StorageRetentionService;
+  dbRetentionService: DbRetentionService;
+}): Promise<void> {
+  const { config, storageRetentionService, dbRetentionService } = params;
+  await Promise.all([
+    fs.mkdir(config.outputDir, { recursive: true }),
+    fs.mkdir(config.tempDir, { recursive: true }),
+  ]);
+  await storageRetentionService.start();
+  await dbRetentionService.start();
+}
+
+function createQueueStateLogger<TPayload>(logger: Logger) {
+  return (event: QueueStateEvent<TPayload>): void => {
+    logger.info("queue_state_change", {
+      queue: event.queue,
+      status: event.status,
+      attempt: event.attempt,
+      maxAttempts: event.maxAttempts,
+      willRetry: event.willRetry,
+      retryDelayMs: event.retryDelayMs,
+      key: event.key,
+      jobId: event.jobId,
+      error: event.error,
+    });
+  };
+}
+
+export async function createRuntime(config: AppConfig, logger: Logger): Promise<AppRuntime> {
+  const { postgresClient, crmClient, idempotencyStore, deadLetterStore } =
+    await createCoreRuntimeDeps(config, logger);
+
+  const { layoutPlanBuilder, qrRules, reactionStatusRules, telegramRoutingConfig } =
+    await createRuntimeBusinessConfig(config, postgresClient);
+
+  const {
+    opsAlertService,
+    processingAlertService,
+    telegramMessageMapStore,
+    telegramForwardingService,
+    telegramDeliveryService,
+    pdfPipelineService,
+    storageRetentionService,
+    dbRetentionService,
+  } = await createRuntimeServices({
+    config,
+    logger,
+    postgresClient,
+    qrRules,
+    telegramRoutingConfig,
+  });
+
   if (isOrderWorkerRole(config.appRole)) {
-    await Promise.all([
-      fs.mkdir(config.outputDir, { recursive: true }),
-      fs.mkdir(config.tempDir, { recursive: true }),
-    ]);
-    await storageRetentionService.start();
-    await dbRetentionService.start();
+    await startWorkerRetentionServices({
+      config,
+      storageRetentionService,
+      dbRetentionService,
+    });
   }
 
   const shouldRetryQueueError = (error: unknown): boolean => resolveRetryableError(error);
+  const logOrderQueueState = createQueueStateLogger<OrderIntakeJobPayload>(logger);
+  const logReactionQueueState = createQueueStateLogger<ReactionIntakeJobPayload>(logger);
 
   const orderQueue = new DbQueueService<OrderIntakeJobPayload>({
     db: postgresClient,
@@ -271,19 +414,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
       processingAlertService,
       logger,
     }),
-    onStateChange: (event) => {
-      logger.info("queue_state_change", {
-        queue: event.queue,
-        status: event.status,
-        attempt: event.attempt,
-        maxAttempts: event.maxAttempts,
-        willRetry: event.willRetry,
-        retryDelayMs: event.retryDelayMs,
-        key: event.key,
-        jobId: event.jobId,
-        error: event.error,
-      });
-    },
+    onStateChange: logOrderQueueState,
     onDeadLetter: async (event) => {
       await deadLetterStore.append(event);
 
@@ -359,19 +490,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
       telegramForwardingService,
       reactionRules: reactionStatusRules,
     }),
-    onStateChange: (event) => {
-      logger.info("queue_state_change", {
-        queue: event.queue,
-        status: event.status,
-        attempt: event.attempt,
-        maxAttempts: event.maxAttempts,
-        willRetry: event.willRetry,
-        retryDelayMs: event.retryDelayMs,
-        key: event.key,
-        jobId: event.jobId,
-        error: event.error,
-      });
-    },
+    onStateChange: logReactionQueueState,
     onDeadLetter: async (event) => {
       await deadLetterStore.append(event);
       const alertResult = await opsAlertService.send({
@@ -418,6 +537,7 @@ export async function createRuntime(config: AppConfig, logger: Logger): Promise<
         reactionStages: reactionStatusRules.stages,
       })
     : undefined;
+
   const healthService = new RuntimeHealthService({
     config,
     db: postgresClient,

@@ -151,3 +151,61 @@ test("KeycrmWebhookController accepts secret from query parameter", async () => 
   assert.equal(result.statusCode, 200);
   assert.equal(result.body.ok, true);
 });
+
+test("KeycrmWebhookController uses queue-level idempotent enqueue when available", async () => {
+  const controller = new KeycrmWebhookController({
+    logger: createNoopLogger(),
+    orderQueue: {
+      enqueue: async () => {
+        throw new Error("fallback enqueue should not be used");
+      },
+      enqueueWithIdempotency: async () => ({
+        jobId: "job:dup",
+        deduplicated: false,
+        idempotentDuplicate: true,
+        queue: {
+          name: "order_intake",
+          concurrency: 1,
+          maxQueueSize: 10,
+          pending: 0,
+          running: 0,
+          inflightKeys: 0,
+        },
+      }),
+      getStats: async () => ({
+        name: "order_intake",
+        concurrency: 1,
+        maxQueueSize: 10,
+        pending: 0,
+        running: 0,
+        inflightKeys: 0,
+      }),
+    },
+    idempotencyStore: {
+      init: async () => undefined,
+      reserve: async () => {
+        throw new Error("idempotency store reserve should not be called");
+      },
+      remove: async () => true,
+    },
+    webhookSecret: "",
+  });
+
+  const result = await controller.handle({
+    headers: {},
+    payload: {
+      event: "order.change_order_status",
+      context: {
+        id: 1003,
+        status_id: 20,
+        status_changed_at: "2026-03-19T10:10:00Z",
+      },
+    },
+    requestId: "req-db-idempotent",
+    url: new URL("https://cgbot.workflo.space/webhook/keycrm"),
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.idempotentDuplicates, 1);
+  assert.equal(result.body.enqueued, 0);
+});

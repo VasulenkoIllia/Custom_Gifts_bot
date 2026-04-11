@@ -1,25 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/postgres-client";
+import { QueueOverflowError } from "./queue-errors";
 import type {
   QueueDeadLetterEvent,
   QueueEnqueueInput,
   QueueEnqueueResult,
+  QueueEnqueueWithIdempotencyInput,
+  QueueEnqueueWithIdempotencyResult,
   QueueHandler,
   QueueJob,
   QueueOptions,
   QueueStateEvent,
   QueueStats,
 } from "./queue.types";
-
-export class QueueOverflowError extends Error {
-  readonly statusCode: number;
-
-  constructor(message: string) {
-    super(message);
-    this.name = "QueueOverflowError";
-    this.statusCode = 429;
-  }
-}
+export { QueueOverflowError } from "./queue-errors";
 
 type DbQueueJobRow = {
   id: string;
@@ -40,7 +34,7 @@ type DbQueueJobRow = {
 };
 
 type EnqueueOutcomeRow = {
-  outcome: "inserted" | "deduplicated" | "overflow";
+  outcome: "inserted" | "deduplicated" | "overflow" | "idempotent_duplicate";
   job_id: string | null;
 };
 
@@ -74,6 +68,8 @@ export class DbQueueService<TPayload> {
   private closing = false;
   private readonly runners = new Set<Promise<void>>();
   private readonly activeExecutions = new Set<Promise<void>>();
+  private statsSnapshot: { value: QueueStats; at: number } | null = null;
+  private readonly statsSnapshotTtlMs = 500;
 
   constructor(options: DbQueueServiceOptions<TPayload>) {
     this.db = options.db;
@@ -184,6 +180,128 @@ export class DbQueueService<TPayload> {
     };
   }
 
+  async enqueueWithIdempotency(
+    input: QueueEnqueueWithIdempotencyInput<TPayload>,
+  ): Promise<QueueEnqueueWithIdempotencyResult> {
+    const key = String(input.key ?? "").trim();
+    if (!key) {
+      throw new Error("Queue key is required.");
+    }
+
+    const idempotencyKey = String(input.idempotencyKey ?? "").trim();
+    if (!idempotencyKey) {
+      throw new Error("Idempotency key is required.");
+    }
+
+    const jobId = `${this.name}_${randomUUID()}`;
+    const outcomeResult = await this.db.query<EnqueueOutcomeRow>(
+      `
+        WITH queue_lock AS (
+          SELECT pg_advisory_xact_lock(hashtext($1))
+        ),
+        existing AS (
+          SELECT id
+          FROM queue_jobs
+          WHERE queue_name = $1
+            AND job_key = $3
+            AND status IN ('queued', 'running')
+          LIMIT 1
+        ),
+        queue_load AS (
+          SELECT COUNT(*)::int AS active_count
+          FROM queue_jobs
+          WHERE queue_name = $1
+            AND status IN ('queued', 'running')
+        ),
+        eligibility AS (
+          SELECT
+            (active_count < $6 OR EXISTS(SELECT 1 FROM existing)) AS can_accept
+          FROM queue_load
+        ),
+        idempotency_existing AS (
+          SELECT key
+          FROM idempotency_keys
+          WHERE key = $7
+          LIMIT 1
+        ),
+        idempotency_inserted AS (
+          INSERT INTO idempotency_keys(key)
+          SELECT $7
+          FROM eligibility
+          WHERE can_accept
+            AND NOT EXISTS(SELECT 1 FROM idempotency_existing)
+          RETURNING key
+        ),
+        inserted AS (
+          INSERT INTO queue_jobs(
+            id,
+            queue_name,
+            job_key,
+            payload,
+            status,
+            attempt,
+            max_attempts,
+            available_at,
+            created_at,
+            updated_at
+          )
+          SELECT
+            $2,
+            $1,
+            $3,
+            $4::jsonb,
+            'queued',
+            1,
+            $5,
+            NOW(),
+            NOW(),
+            NOW()
+          FROM queue_load
+          WHERE active_count < $6
+            AND EXISTS(SELECT 1 FROM idempotency_inserted)
+          ON CONFLICT (queue_name, job_key)
+            WHERE status IN ('queued', 'running')
+          DO NOTHING
+          RETURNING id
+        )
+        SELECT
+          CASE
+            WHEN EXISTS(SELECT 1 FROM idempotency_existing) THEN 'idempotent_duplicate'
+            WHEN NOT EXISTS(SELECT 1 FROM eligibility WHERE can_accept) THEN 'overflow'
+            WHEN EXISTS(SELECT 1 FROM inserted) THEN 'inserted'
+            WHEN EXISTS(SELECT 1 FROM existing) THEN 'deduplicated'
+            ELSE 'overflow'
+          END AS outcome,
+          COALESCE(
+            (SELECT id FROM inserted LIMIT 1),
+            (SELECT id FROM existing LIMIT 1)
+          ) AS job_id
+      `,
+      [
+        this.name,
+        jobId,
+        key,
+        JSON.stringify(input.payload),
+        this.maxAttempts,
+        this.maxQueueSize,
+        idempotencyKey,
+      ],
+    );
+
+    const outcome = outcomeResult.rows[0]?.outcome ?? "overflow";
+    if (outcome === "overflow") {
+      throw new QueueOverflowError(`Queue ${this.name} is full (${this.maxQueueSize}).`);
+    }
+
+    const stats = await this.getStats();
+    return {
+      jobId: outcomeResult.rows[0]?.job_id ?? jobId,
+      deduplicated: outcome === "deduplicated",
+      idempotentDuplicate: outcome === "idempotent_duplicate",
+      queue: stats,
+    };
+  }
+
   async getStats(): Promise<QueueStats> {
     const result = await this.db.query<QueueStatsRow>(
       `
@@ -198,7 +316,7 @@ export class DbQueueService<TPayload> {
     );
 
     const row = result.rows[0];
-    return {
+    const stats: QueueStats = {
       name: this.name,
       concurrency: this.concurrency,
       maxQueueSize: this.maxQueueSize,
@@ -206,6 +324,11 @@ export class DbQueueService<TPayload> {
       running: toNonNegativeInteger(row?.running),
       inflightKeys: toNonNegativeInteger(row?.inflight_keys),
     };
+    this.statsSnapshot = {
+      value: stats,
+      at: Date.now(),
+    };
+    return stats;
   }
 
   start(): void {
@@ -242,22 +365,27 @@ export class DbQueueService<TPayload> {
 
   private async runLoop(): Promise<void> {
     while (!this.closing) {
-      const recovered = await this.recoverExpiredJob();
-      if (recovered) {
-        continue;
-      }
+      try {
+        const recovered = await this.recoverExpiredJob();
+        if (recovered) {
+          continue;
+        }
 
-      const job = await this.claimNextJob();
-      if (!job) {
+        const job = await this.claimNextJob();
+        if (!job) {
+          await sleep(this.pollIntervalMs);
+          continue;
+        }
+
+        const execution = this.execute(job).finally(() => {
+          this.activeExecutions.delete(execution);
+        });
+        this.activeExecutions.add(execution);
+        await execution;
+      } catch (_error) {
+        // Keep each runner self-healing even if one DB/handler step throws.
         await sleep(this.pollIntervalMs);
-        continue;
       }
-
-      const execution = this.execute(job).finally(() => {
-        this.activeExecutions.delete(execution);
-      });
-      this.activeExecutions.add(execution);
-      await execution;
     }
   }
 
@@ -268,12 +396,14 @@ export class DbQueueService<TPayload> {
     try {
       await this.handler(job);
       clearInterval(heartbeat);
-      await this.completeJob(job.id);
-      await this.emitState({
-        ...job,
-        status: "completed",
-        finishedAt: Date.now(),
-      });
+      const completed = await this.completeJob(job.id);
+      if (completed) {
+        await this.emitState({
+          ...job,
+          status: "completed",
+          finishedAt: Date.now(),
+        });
+      }
     } catch (error) {
       clearInterval(heartbeat);
       const retryable = this.shouldRetry({
@@ -283,29 +413,33 @@ export class DbQueueService<TPayload> {
       const canRetry = retryable && job.attempt < job.maxAttempts;
       if (canRetry) {
         const retryDelayMs = this.computeRetryDelay(job.attempt);
-        await this.retryJob(job.id, {
+        const retried = await this.retryJob(job.id, {
           error,
           retryable,
           retryDelayMs,
         });
-        await this.emitState(
-          {
-            ...job,
-            status: "queued",
-            attempt: job.attempt + 1,
-          },
-          error,
-          {
-            willRetry: true,
-            retryDelayMs,
-          },
-        );
+        if (retried) {
+          await this.emitState(
+            {
+              ...job,
+              status: "queued",
+              attempt: job.attempt + 1,
+            },
+            error,
+            {
+              willRetry: true,
+              retryDelayMs,
+            },
+          );
+        }
         return;
       }
 
       const failedJob = await this.failJob(job.id, error, retryable);
-      await this.emitState(failedJob, error);
-      await this.handleDeadLetter(failedJob, error, retryable);
+      if (failedJob) {
+        await this.emitState(failedJob, error);
+        await this.handleDeadLetter(failedJob, error, retryable);
+      }
     }
   }
 
@@ -364,29 +498,33 @@ export class DbQueueService<TPayload> {
     const canRetry = job.attempt < job.maxAttempts;
     if (canRetry) {
       const retryDelayMs = this.computeRetryDelay(job.attempt);
-      await this.retryJob(job.id, {
+      const retried = await this.retryJob(job.id, {
         error: timeoutError,
         retryable: true,
         retryDelayMs,
       });
-      await this.emitState(
-        {
-          ...job,
-          status: "queued",
-          attempt: job.attempt + 1,
-        },
-        timeoutError,
-        {
-          willRetry: true,
-          retryDelayMs,
-        },
-      );
+      if (retried) {
+        await this.emitState(
+          {
+            ...job,
+            status: "queued",
+            attempt: job.attempt + 1,
+          },
+          timeoutError,
+          {
+            willRetry: true,
+            retryDelayMs,
+          },
+        );
+      }
       return true;
     }
 
     const failedJob = await this.failJob(job.id, timeoutError, true);
-    await this.emitState(failedJob, timeoutError);
-    await this.handleDeadLetter(failedJob, timeoutError, true);
+    if (failedJob) {
+      await this.emitState(failedJob, timeoutError);
+      await this.handleDeadLetter(failedJob, timeoutError, true);
+    }
     return true;
   }
 
@@ -458,8 +596,8 @@ export class DbQueueService<TPayload> {
     }, intervalMs);
   }
 
-  private async completeJob(jobId: string): Promise<void> {
-    await this.db.query(
+  private async completeJob(jobId: string): Promise<boolean> {
+    const result = await this.db.query(
       `
         UPDATE queue_jobs
         SET
@@ -474,6 +612,8 @@ export class DbQueueService<TPayload> {
       `,
       [jobId, this.name, this.workerInstanceId],
     );
+
+    return result.rowCount > 0;
   }
 
   private async retryJob(
@@ -483,8 +623,8 @@ export class DbQueueService<TPayload> {
       retryable: boolean;
       retryDelayMs: number;
     },
-  ): Promise<void> {
-    await this.db.query(
+  ): Promise<boolean> {
+    const result = await this.db.query(
       `
         UPDATE queue_jobs
         SET
@@ -513,13 +653,15 @@ export class DbQueueService<TPayload> {
         this.workerInstanceId,
       ],
     );
+
+    return result.rowCount > 0;
   }
 
   private async failJob(
     jobId: string,
     error: unknown,
     retryable: boolean,
-  ): Promise<QueueJob<TPayload>> {
+  ): Promise<QueueJob<TPayload> | null> {
     const result = await this.db.query<DbQueueJobRow>(
       `
         UPDATE queue_jobs
@@ -564,7 +706,8 @@ export class DbQueueService<TPayload> {
       ],
     );
 
-    return this.toQueueJob(result.rows[0]);
+    const row = result.rows[0];
+    return row ? this.toQueueJob(row) : null;
   }
 
   private async handleDeadLetter(
@@ -611,7 +754,7 @@ export class DbQueueService<TPayload> {
     }
 
     try {
-      const stats = await this.getStats();
+      const stats = await this.getStatsSnapshot();
       const normalizedStatus = job.status === "failed" ? "failed" : job.status;
       const event: QueueStateEvent<TPayload> = {
         queue: this.name,
@@ -630,6 +773,21 @@ export class DbQueueService<TPayload> {
     } catch (_error) {
       // State callbacks are observability only.
     }
+  }
+
+  private async getStatsSnapshot(): Promise<QueueStats> {
+    const now = Date.now();
+    const cached = this.statsSnapshot;
+    if (cached && now - cached.at <= this.statsSnapshotTtlMs) {
+      return cached.value;
+    }
+
+    const value = await this.getStats();
+    this.statsSnapshot = {
+      value,
+      at: now,
+    };
+    return value;
   }
 
   private computeRetryDelay(attempt: number): number {

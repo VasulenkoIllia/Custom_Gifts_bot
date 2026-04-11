@@ -27,7 +27,6 @@ export type TelegramWebhookNormalized = {
   updateId: number | null;
   chatId: string | null;
   messageId: number | null;
-  heartCount: number | null;
   emojiCounts: Record<string, number>;
 };
 
@@ -99,26 +98,6 @@ function normalizeTrackedReactions(
   return counts;
 }
 
-const HEART_EMOJIS = new Set<string>(["❤️", "❤", "♥️", "♥"]);
-
-function normalizeHeartCount(emojiCounts: Record<string, number>): number {
-  let total = 0;
-  for (const [emoji, count] of Object.entries(emojiCounts)) {
-    if (!HEART_EMOJIS.has(emoji)) {
-      continue;
-    }
-
-    const value = Number(count);
-    if (!Number.isFinite(value) || value <= 0) {
-      continue;
-    }
-
-    total += Math.max(0, Math.floor(value));
-  }
-
-  return total;
-}
-
 export function normalizeTelegramUpdates(
   payload: unknown,
   trackedEmojis: string[] = ["❤️"],
@@ -144,7 +123,6 @@ export function normalizeTelegramUpdates(
         Number.isFinite(Number(messageReactionCount?.message_id ?? messageReaction?.message_id))
           ? Number(messageReactionCount?.message_id ?? messageReaction?.message_id)
           : null,
-      heartCount: normalizeHeartCount(emojiCounts),
       emojiCounts,
     };
   });

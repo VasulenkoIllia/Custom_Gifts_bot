@@ -14,7 +14,7 @@
     "migrate": "node dist/scripts/migrate.js",
     "migrate:dev": "tsx src/scripts/migrate.ts",
     "start": "node dist/index.js",
-    "test": "tsc -p tsconfig.test.json && node --test .tmp-test-dist/tests/*.test.js",
+    "test": "node -e \"require('node:fs').rmSync('.tmp-test-dist',{ recursive: true, force: true })\" && tsc -p tsconfig.test.json && node --test .tmp-test-dist/tests/*.test.js",
     "test:orders:business": "npm run build && node dist/scripts/business-logic-order-dry-run.js",
     "test:orders:snapshot": "node dist/scripts/snapshot-order-statuses.js",
     "test:orders:snapshot:dev": "tsx src/scripts/snapshot-order-statuses.ts",

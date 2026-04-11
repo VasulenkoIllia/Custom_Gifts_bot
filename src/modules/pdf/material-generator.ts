@@ -222,29 +222,29 @@ type BboxType = { x: number; y: number; width: number; height: number };
 type LayoutMaterial = {
   type: "poster" | "engraving" | "sticker";
   code: string;
-  product_id: number | null;
-  source_url: string | null;
+  productId: number | null;
+  sourceUrl: string | null;
   text: string | null;
   format: "A5" | "A4" | null;
-  stand_type: "W" | "WW" | "MWW" | "C" | "K" | null;
+  standType: "W" | "WW" | "MWW" | "C" | "K" | null;
   index: number;
   total: number;
   filename: string;
 };
 
 type LayoutPlanInput = {
-  order_number: string;
+  orderNumber: string;
   urgent: boolean;
   flags: string[];
   notes: string[];
-  preview_images: string[];
+  previewImages: string[];
   qr: {
     requested: boolean;
-    original_url: string | null;
-    short_url: string | null;
+    originalUrl: string | null;
+    shortUrl: string | null;
     url: string | null;
     valid: boolean;
-    should_generate: boolean;
+    shouldGenerate: boolean;
   };
   materials: LayoutMaterial[];
 };
@@ -2763,7 +2763,7 @@ export async function generateMaterialFiles(
 
       if (material.type === "poster") {
         details = await downloadFile({
-          url: material.source_url,
+          url: material.sourceUrl,
           outPath: filePath,
           sourceRequestOptions: safeSourceRequestOptions,
         });
@@ -2776,7 +2776,7 @@ export async function generateMaterialFiles(
           whiteRecolorAppliedEarly = true;
         }
 
-        if (layoutPlan?.qr?.should_generate && layoutPlan?.qr?.url) {
+        if (layoutPlan?.qr?.shouldGenerate && layoutPlan?.qr?.url) {
           const qrPlacement = resolveQrPlacement(material.format, qrPlacementByFormat);
           if (!qrPlacement) {
             warnings.push(

@@ -47,21 +47,18 @@ export function createReactionIntakeWorker({
   return async (job) => {
     const chatId = String(job.payload.chatId ?? "").trim();
     const messageId = Number.parseInt(String(job.payload.messageId ?? ""), 10);
-    const heartCount = Number.isFinite(job.payload.heartCount)
-      ? Math.max(0, Math.floor(Number(job.payload.heartCount)))
-      : 0;
     const emojiCounts =
       job.payload.emojiCounts && typeof job.payload.emojiCounts === "object"
         ? job.payload.emojiCounts
         : {};
-    const primaryReactionCount = resolvePrimaryReactionCount(reactionRules.stages, emojiCounts) || heartCount;
+    const primaryReactionCount = resolvePrimaryReactionCount(reactionRules.stages, emojiCounts);
 
     if (!chatId || !Number.isFinite(messageId)) {
       logger.info("reaction_intake_skipped_invalid_identity", {
         updateId: job.payload.updateId,
         chatId: job.payload.chatId,
         messageId: job.payload.messageId,
-        heartCount: job.payload.heartCount,
+        reactionCount: primaryReactionCount,
         emojiCounts: job.payload.emojiCounts,
         jobId: job.id,
       });
@@ -79,7 +76,7 @@ export function createReactionIntakeWorker({
         updateId: job.payload.updateId,
         chatId,
         messageId,
-        heartCount: primaryReactionCount,
+        reactionCount: primaryReactionCount,
         emojiCounts,
         jobId: job.id,
       });
@@ -98,7 +95,7 @@ export function createReactionIntakeWorker({
         orderId,
         chatId,
         messageId,
-        heartCount: primaryReactionCount,
+        reactionCount: primaryReactionCount,
         emojiCounts,
         jobId: job.id,
       });
@@ -119,7 +116,7 @@ export function createReactionIntakeWorker({
         orderId,
         chatId,
         messageId,
-        heartCount: primaryReactionCount,
+        reactionCount: primaryReactionCount,
         emojiCounts,
         targetStage: targetStage.stage.code,
         targetStatusId: targetStage.stage.statusId,
@@ -207,7 +204,7 @@ export function createReactionIntakeWorker({
       updateId: job.payload.updateId,
       chatId,
       messageId,
-      heartCount: primaryReactionCount,
+      reactionCount: primaryReactionCount,
       emojiCounts,
       appliedStage: targetStage.stage.code,
       appliedStatusId,

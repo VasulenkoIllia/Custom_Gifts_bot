@@ -47,6 +47,7 @@ test("DbRetentionService deletes stale operational records", async () => {
     db,
     logger: noopLogger(),
     cleanupIntervalMs: 60_000,
+    cleanupBatchSize: 1_000,
     queueJobRetentionHours: 72,
     telegramDeliveryRetentionHours: 720,
     forwardingBatchRetentionHours: 720,
@@ -57,11 +58,11 @@ test("DbRetentionService deletes stale operational records", async () => {
 
   assert.equal(db.calls.length, 4);
   assert.match(db.calls[0]?.text ?? "", /DELETE FROM queue_jobs/i);
-  assert.deepEqual(db.calls[0]?.params, [72]);
+  assert.deepEqual(db.calls[0]?.params, [72, 1_000]);
   assert.match(db.calls[1]?.text ?? "", /DELETE FROM telegram_delivery_records/i);
-  assert.deepEqual(db.calls[1]?.params, [720]);
+  assert.deepEqual(db.calls[1]?.params, [720, 1_000]);
   assert.match(db.calls[2]?.text ?? "", /DELETE FROM forwarding_batches/i);
-  assert.deepEqual(db.calls[2]?.params, [720]);
+  assert.deepEqual(db.calls[2]?.params, [720, 1_000]);
   assert.match(db.calls[3]?.text ?? "", /DELETE FROM dead_letters/i);
-  assert.deepEqual(db.calls[3]?.params, [336]);
+  assert.deepEqual(db.calls[3]?.params, [336, 1_000]);
 });

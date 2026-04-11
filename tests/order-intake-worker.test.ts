@@ -672,6 +672,129 @@ test("order worker moves order to missing file and alerts ops when poster source
   );
 });
 
+test("order worker keeps CRM status unchanged when poster source is missing but preview exists", async () => {
+  let pdfCalled = false;
+  let telegramCalled = false;
+  let updatedStatusId: number | null = null;
+  const sentAlerts: Array<{ title: string; details?: string; orderId?: string }> = [];
+  const sentProcessingAlerts: Array<{ title: string; details?: string; orderId?: string }> = [];
+
+  const worker = createOrderIntakeWorker({
+    logger: logger(),
+    materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: {
+      send: async (params) => {
+        sentAlerts.push({
+          title: params.title,
+          details: params.details,
+          orderId: params.orderId,
+        });
+        return { sent: true, deduplicated: false };
+      },
+    },
+    processingAlertService: {
+      send: async (params) => {
+        sentProcessingAlerts.push({
+          title: params.title,
+          details: params.details,
+          orderId: params.orderId,
+        });
+        return { sent: true, deduplicated: false };
+      },
+    },
+    crmClient: {
+      getOrder: async () => ({ id: 29476, status_id: 20, products: [] }),
+      updateOrderStatus: async (_orderId: string, statusId: number) => {
+        updatedStatusId = statusId;
+        return { id: 29476, status_id: statusId, products: [] };
+      },
+    },
+    layoutPlanBuilder: {
+      build: () => ({
+        orderNumber: "29476",
+        urgent: false,
+        flags: [],
+        notes: [
+          '🚨 Для "PosterGiftA5WW" відсутній друкарський файл (_tib_design_link_1). Preview не використовується як source для друку.',
+        ],
+        previewImages: ["https://cdn.teeinblue.com/customizations/example-preview.jpg"],
+        qr: {
+          requested: false,
+          valid: false,
+          shouldGenerate: false,
+          originalUrl: null,
+          url: null,
+        },
+        materials: [
+          {
+            type: "poster",
+            code: "AA5",
+            index: 1,
+            total: 1,
+            filename: "CGU_AA5_29476_1_1",
+            productId: 10,
+            sku: "PosterGiftA5WW",
+            sourceUrl: null,
+            text: null,
+            format: "A5",
+            standType: null,
+          },
+        ],
+      }),
+    } as never,
+    pdfPipelineService: {
+      generateForOrder: async () => {
+        pdfCalled = true;
+        throw new Error("must not run");
+      },
+    } as never,
+    telegramDeliveryService: {
+      sendOrderMaterials: async () => {
+        telegramCalled = true;
+        throw new Error("must not run");
+      },
+    } as never,
+    telegramMessageMapStore: {
+      linkMessages: async () => ({ linked: 0 }),
+    } as never,
+  });
+
+  await worker({
+    id: "j8-preview",
+    key: "k8-preview",
+    status: "queued",
+    attempt: 1,
+    maxAttempts: 3,
+    createdAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+    payload: {
+      ...baseJobPayload(),
+      orderId: "29476",
+      statusId: 20,
+    },
+  });
+
+  assert.equal(updatedStatusId, null);
+  assert.equal(pdfCalled, false);
+  assert.equal(telegramCalled, false);
+  assert.equal(sentAlerts.length, 1);
+  assert.equal(sentProcessingAlerts.length, 1);
+  assert.equal(sentAlerts[0]?.title, "Не вдалося сформувати PDF");
+  assert.equal(sentAlerts[0]?.orderId, "29476");
+  assert.equal(sentProcessingAlerts[0]?.title, "Не вдалося сформувати PDF");
+  assert.equal(sentProcessingAlerts[0]?.orderId, "29476");
+  assert.match(
+    sentAlerts[0]?.details ?? "",
+    /відсутній друкарський source PDF/i,
+  );
+  assert.match(
+    sentProcessingAlerts[0]?.details ?? "",
+    /відсутній друкарський source PDF/i,
+  );
+});
+
 test("order worker moves order to missing file and alerts ops when engraving or sticker text is missing", async () => {
   let pdfCalled = false;
   let telegramCalled = false;

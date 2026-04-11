@@ -26,7 +26,9 @@ TypeScript-сервіс для повного циклу обробки замо
    - які є preview;
    - які є warning-и.
 5. Далі йдуть ранні перевірки:
-   - немає `_tib_design_link_1` -> одразу `40 / Без файлу`;
+   - немає `_tib_design_link_1`:
+     - якщо є `preview` -> шлемо alert `Не вдалося сформувати PDF`, але CRM-статус не змінюємо;
+     - якщо `preview` немає -> одразу `40 / Без файлу`;
    - є engraving/sticker, але немає тексту -> одразу `40 / Без файлу`;
    - `_tib_design_link_1` є, але CDN/TeeInBlue дає `403/404` -> CRM статус не змінюємо, тільки шлемо alert `Не вдалося сформувати PDF`.
 6. Якщо ранніх блокерів немає, запускається PDF pipeline.
@@ -35,6 +37,17 @@ TypeScript-сервіс для повного циклу обробки замо
    - у стікері emoji автоматично вирізаються, лишається тільки plain text.
 8. Оператор ставить `❤️` під PDF.
 9. `reaction-worker` змінює CRM статус на `22 / Друк` і копіює PDF у topic `ЗАМОВЛЕННЯ`.
+
+## Коли PDF не формується: матриця рішень
+
+| Сценарій | Що робить система | CRM статус | Retry / DLQ | Alert |
+|---|---|---|---|---|
+| `webhook.status_id != materialsStatusId` або `order.status_id != materialsStatusId` | Intake job `skip`, PDF pipeline не стартує | Без змін | Ні | Ні (тільки `info` лог) |
+| Немає `_tib_design_link_1` і **немає** preview | Зупинка до PDF pipeline | `missingFileStatusId` (`40`) | Ні | `error` в processing + ops |
+| Немає `_tib_design_link_1`, але preview **є** | Зупинка до PDF pipeline | Без змін | Ні | `error` в processing + ops (`Не вдалося сформувати PDF`) |
+| Немає тексту engraving/sticker | Зупинка до PDF pipeline | `missingFileStatusId` (`40`) | Ні | `error` в processing + ops |
+| `_tib_design_link_1` є, але download дає `403/404` | PDF pipeline зупиняється як deterministic `source unavailable` | Без змін | Ні | `error` в processing + ops (`Не вдалося сформувати PDF`) |
+| Інші помилки PDF (`pdf_generation`) | Worker кидає `OrderProcessingError`, queue робить retry | На retry-етапі без змін; при DLQ -> `missingFileStatusId` (`40`) | Так | При DLQ: `critical` в ops (`Job moved to DLQ`) |
 
 ## Основні компоненти
 
@@ -54,7 +67,9 @@ TypeScript-сервіс для повного циклу обробки замо
 - routing і reaction rules bootstrap-яться з env/json, але працюють через БД
 - PDF/temp файли зберігаються локально тимчасово і чистяться retention-політикою
 - deterministic кейси відсікаються до або під час старту PDF pipeline:
-  - `немає _tib_design_link_1` -> CRM `40 / Без файлу`
+  - `немає _tib_design_link_1`:
+    - якщо `preview` є -> тільки alert `Не вдалося сформувати PDF`, CRM статус не змінюється
+    - якщо `preview` немає -> CRM `40 / Без файлу`
   - `немає тексту для engraving/sticker` -> CRM `40 / Без файлу`
   - `_tib_design_link_1` є, але CDN дає `403/404` -> CRM статус не змінюється, у Telegram іде alert `Не вдалося сформувати PDF`
 - white cleanup повернутий до legacy-aggressive preset:

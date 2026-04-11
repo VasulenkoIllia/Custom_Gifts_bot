@@ -5,6 +5,9 @@ export type AppConfig = {
   projectPhase: "stage_f_pdf_pipeline";
   databaseUrl: string;
   databasePoolMax: number;
+  databasePoolConnectionTimeoutMs: number;
+  databasePoolIdleTimeoutMs: number;
+  databaseQueryTimeoutMs: number;
   databaseAutoMigrateOnBoot: boolean;
   databaseMigrationsDir: string;
   requestBodyLimitBytes: number;
@@ -62,6 +65,7 @@ export type AppConfig = {
   tempRetentionHours: number;
   cleanupIntervalMs: number;
   dbCleanupIntervalMs: number;
+  dbCleanupBatchSize: number;
   queueJobRetentionHours: number;
   telegramDeliveryRetentionHours: number;
   forwardingBatchRetentionHours: number;

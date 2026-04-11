@@ -52,7 +52,7 @@
 - додано TS QR/Spotify post-processing поверх згенерованого poster PDF;
 - після TS QR/Spotify embed для `CMYK` виконується повторна CMYK-конверсія постера;
 - додано pipeline-конфіг у `.env`/`AppConfig` (шрифти, output, color-space, QR fallback placement);
-- додано тест на mapping `LayoutPlan -> legacy generator payload`.
+- додано тест на mapping `LayoutPlan -> material generator payload`.
 
 Оновлення станом на Stage G Telegram delivery:
 - `order_intake` worker тепер відправляє generated materials у Telegram після PDF pipeline;

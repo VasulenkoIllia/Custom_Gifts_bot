@@ -86,8 +86,7 @@ function normalizeStage(value: unknown, index: number): ReactionStageRule | null
   }
 
   const source = value as Record<string, unknown>;
-  const countThreshold =
-    parsePositiveInt(source.countThreshold) ?? parsePositiveInt(source.heartCount);
+  const countThreshold = parsePositiveInt(source.countThreshold);
   const statusId = parsePositiveInt(source.statusId);
   const code = String(source.code ?? "").trim().toUpperCase();
   const emoji = String(source.emoji ?? "").trim();

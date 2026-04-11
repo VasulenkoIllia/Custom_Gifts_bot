@@ -25,6 +25,14 @@ export type QueueEnqueueResult = {
   queue: QueueStats;
 };
 
+export type QueueEnqueueWithIdempotencyInput<TPayload> = QueueEnqueueInput<TPayload> & {
+  idempotencyKey: string;
+};
+
+export type QueueEnqueueWithIdempotencyResult = QueueEnqueueResult & {
+  idempotentDuplicate: boolean;
+};
+
 export type QueueStats = {
   name: string;
   concurrency: number;
@@ -38,6 +46,9 @@ export type QueueHandler<TPayload> = (job: QueueJob<TPayload>) => Promise<void>;
 
 export type QueueProducer<TPayload> = {
   enqueue: (input: QueueEnqueueInput<TPayload>) => MaybePromise<QueueEnqueueResult>;
+  enqueueWithIdempotency?: (
+    input: QueueEnqueueWithIdempotencyInput<TPayload>,
+  ) => MaybePromise<QueueEnqueueWithIdempotencyResult>;
   getStats: () => MaybePromise<QueueStats>;
 };
 

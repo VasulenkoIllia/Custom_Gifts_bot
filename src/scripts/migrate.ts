@@ -14,6 +14,9 @@ async function main(): Promise<void> {
   const client = new PostgresClient({
     connectionString: config.databaseUrl,
     maxPoolSize: config.databasePoolMax,
+    connectionTimeoutMs: config.databasePoolConnectionTimeoutMs,
+    idleTimeoutMs: config.databasePoolIdleTimeoutMs,
+    queryTimeoutMs: config.databaseQueryTimeoutMs,
   });
 
   try {

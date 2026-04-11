@@ -3,11 +3,11 @@ import test from "node:test";
 import {
   buildQrDecisionWarnings,
   resolveCaptionQrUrl,
-  toLegacyLayoutPlan,
+  toMaterialGeneratorLayoutPlan,
 } from "../src/modules/pdf/pdf-pipeline.service";
 
-test("toLegacyLayoutPlan maps layout plan fields for legacy generator", () => {
-  const legacy = toLegacyLayoutPlan({
+test("toMaterialGeneratorLayoutPlan maps layout plan fields for material generator", () => {
+  const layout = toMaterialGeneratorLayoutPlan({
     orderNumber: "999",
     urgent: true,
     flags: ["QR +", "LF +"],
@@ -50,17 +50,17 @@ test("toLegacyLayoutPlan maps layout plan fields for legacy generator", () => {
     ],
   });
 
-  assert.equal(legacy.order_number, "999");
-  assert.equal(legacy.urgent, true);
-  assert.equal(legacy.materials.length, 2);
-  assert.equal(legacy.materials[0]?.source_url, "https://example.com/poster.pdf");
-  assert.equal(legacy.materials[1]?.stand_type, "W");
-  assert.equal(legacy.qr.should_generate, true);
-  assert.equal(legacy.qr.short_url, null);
+  assert.equal(layout.orderNumber, "999");
+  assert.equal(layout.urgent, true);
+  assert.equal(layout.materials.length, 2);
+  assert.equal(layout.materials[0]?.sourceUrl, "https://example.com/poster.pdf");
+  assert.equal(layout.materials[1]?.standType, "W");
+  assert.equal(layout.qr.shouldGenerate, true);
+  assert.equal(layout.qr.shortUrl, null);
 });
 
-test("toLegacyLayoutPlan supports resolved short QR URL metadata", () => {
-  const legacy = toLegacyLayoutPlan(
+test("toMaterialGeneratorLayoutPlan supports resolved short QR URL metadata", () => {
+  const layout = toMaterialGeneratorLayoutPlan(
     {
       orderNumber: "111",
       urgent: false,
@@ -82,9 +82,9 @@ test("toLegacyLayoutPlan supports resolved short QR URL metadata", () => {
     },
   );
 
-  assert.equal(legacy.qr.original_url, "https://example.com/long");
-  assert.equal(legacy.qr.url, "https://lnk.ua/abc123");
-  assert.equal(legacy.qr.short_url, "https://lnk.ua/abc123");
+  assert.equal(layout.qr.originalUrl, "https://example.com/long");
+  assert.equal(layout.qr.url, "https://lnk.ua/abc123");
+  assert.equal(layout.qr.shortUrl, "https://lnk.ua/abc123");
 });
 
 test("buildQrDecisionWarnings emits alert warning for unsupported QR SKU", () => {

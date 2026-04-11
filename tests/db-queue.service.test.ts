@@ -264,6 +264,7 @@ class InMemoryDbQueueDatabase implements DatabaseClient {
     const leaseOwner = String(params[2] ?? "").trim();
     const job = this.jobs.get(jobId);
 
+    let updated = 0;
     if (
       job &&
       job.queue_name === queueName &&
@@ -276,11 +277,12 @@ class InMemoryDbQueueDatabase implements DatabaseClient {
       job.lease_owner = null;
       job.lease_expires_at = null;
       job.updated_at = now;
+      updated = 1;
     }
 
     return {
       rows: [],
-      rowCount: 0,
+      rowCount: updated,
     };
   }
 
@@ -295,6 +297,7 @@ class InMemoryDbQueueDatabase implements DatabaseClient {
     const leaseOwner = String(params[7] ?? "").trim();
     const job = this.jobs.get(jobId);
 
+    let updated = 0;
     if (
       job &&
       job.queue_name === queueName &&
@@ -312,11 +315,12 @@ class InMemoryDbQueueDatabase implements DatabaseClient {
       job.failure_kind = failureKind;
       job.error = error;
       job.updated_at = now;
+      updated = 1;
     }
 
     return {
       rows: [],
-      rowCount: 0,
+      rowCount: updated,
     };
   }
 
@@ -507,4 +511,93 @@ test("DbQueueService moves non-retryable jobs to dead letter", async () => {
 
   await completion.promise;
   await queue.close();
+});
+
+test("DbQueueService.enqueueWithIdempotency reports idempotent duplicate without throwing", async () => {
+  const db: DatabaseClient = {
+    query: async <TRow = Record<string, unknown>>(
+      text: string,
+      _params: ReadonlyArray<unknown> = [],
+    ): Promise<DbQueryResult<TRow>> => {
+      const sql = normalizeSql(text);
+      if (sql.startsWith("WITH queue_lock AS") && sql.includes("idempotency_inserted")) {
+        return {
+          rows: [{ outcome: "idempotent_duplicate", job_id: null } as TRow],
+          rowCount: 1,
+        };
+      }
+      if (sql.startsWith("SELECT COUNT(*) FILTER (WHERE status = 'queued')::int AS pending")) {
+        return {
+          rows: [{ pending: 0, running: 0, inflight_keys: 0 } as TRow],
+          rowCount: 1,
+        };
+      }
+
+      throw new Error(`Unsupported SQL in test double: ${sql}`);
+    },
+    close: async () => undefined,
+  };
+
+  const queue = new DbQueueService<{ value: string }>({
+    db,
+    name: "order_intake",
+    concurrency: 1,
+    maxQueueSize: 10,
+    jobTimeoutMs: 5_000,
+    pollIntervalMs: 100,
+    maxAttempts: 2,
+    retryBaseMs: 10,
+    handler: async () => undefined,
+  });
+
+  const result = await queue.enqueueWithIdempotency({
+    idempotencyKey: "keycrm:abc",
+    key: "order:1002",
+    payload: { value: "ok" },
+  });
+
+  assert.equal(result.idempotentDuplicate, true);
+  assert.equal(result.deduplicated, false);
+});
+
+test("DbQueueService.enqueueWithIdempotency throws overflow when queue is full", async () => {
+  const db: DatabaseClient = {
+    query: async <TRow = Record<string, unknown>>(
+      text: string,
+      _params: ReadonlyArray<unknown> = [],
+    ): Promise<DbQueryResult<TRow>> => {
+      const sql = normalizeSql(text);
+      if (sql.startsWith("WITH queue_lock AS") && sql.includes("idempotency_inserted")) {
+        return {
+          rows: [{ outcome: "overflow", job_id: null } as TRow],
+          rowCount: 1,
+        };
+      }
+
+      throw new Error(`Unsupported SQL in test double: ${sql}`);
+    },
+    close: async () => undefined,
+  };
+
+  const queue = new DbQueueService<{ value: string }>({
+    db,
+    name: "order_intake",
+    concurrency: 1,
+    maxQueueSize: 1,
+    jobTimeoutMs: 5_000,
+    pollIntervalMs: 100,
+    maxAttempts: 1,
+    retryBaseMs: 10,
+    handler: async () => undefined,
+  });
+
+  await assert.rejects(
+    () =>
+      queue.enqueueWithIdempotency({
+        idempotencyKey: "keycrm:overflow",
+        key: "order:1003",
+        payload: { value: "overflow" },
+      }),
+    /is full/i,
+  );
 });

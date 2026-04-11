@@ -78,6 +78,34 @@ function collectImmediateMissingFileReasons(layoutPlan: LayoutPlan): string[] {
   return Array.from(reasons);
 }
 
+function shouldKeepOrderStatusOnMissingSource(layoutPlan: LayoutPlan, reasons: string[]): boolean {
+  if (reasons.length <= 0) {
+    return false;
+  }
+
+  const hasPreviewImages = Array.isArray(layoutPlan.previewImages) && layoutPlan.previewImages.length > 0;
+  if (!hasPreviewImages) {
+    return false;
+  }
+
+  const hasPosterWithoutSource = layoutPlan.materials.some(
+    (material) => material.type === "poster" && !String(material.sourceUrl ?? "").trim(),
+  );
+  if (!hasPosterWithoutSource) {
+    return false;
+  }
+
+  const hasAddonTextMissingReason = reasons.some((reason) => {
+    const normalized = String(reason ?? "").trim().toLowerCase();
+    return normalized.includes("гравіювання") || normalized.includes("стікер");
+  });
+  if (hasAddonTextMissingReason) {
+    return false;
+  }
+
+  return reasons.every((reason) => String(reason ?? "").includes("друкарський source PDF"));
+}
+
 function collectDeterministicDownloadFailureReasons(params: {
   layoutPlan: LayoutPlan;
   failed: Array<{ filename?: string; message?: string }>;
@@ -302,11 +330,16 @@ export function createOrderIntakeWorker({
 
     const immediateMissingFileReasons = collectImmediateMissingFileReasons(layoutPlan);
     if (immediateMissingFileReasons.length > 0) {
+      const keepOrderStatus =
+        shouldKeepOrderStatusOnMissingSource(layoutPlan, immediateMissingFileReasons);
+
       await handleMissingFile({
         orderId,
         reasons: immediateMissingFileReasons,
         layoutPlan,
         jobId: job.id,
+        updateCrmStatus: keepOrderStatus ? false : undefined,
+        opsTitle: keepOrderStatus ? "Не вдалося сформувати PDF" : undefined,
       });
       return;
     }

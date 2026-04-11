@@ -4,7 +4,7 @@ import {
   type ReactionStageRule,
 } from "../reactions/reaction-status-rules";
 import type { ReactionIntakeJobPayload } from "../queue/queue-jobs";
-import { QueueOverflowError } from "../queue/db-queue.service";
+import { QueueOverflowError } from "../queue/queue-errors";
 import type { QueueProducer } from "../queue/queue.types";
 import { normalizeTelegramUpdates } from "./telegram-webhook-payload";
 import { validateWebhookSecret } from "./webhook-auth";
@@ -60,7 +60,7 @@ export class TelegramWebhookController {
     const errors: Array<{ updateId: number | null; reason: string }> = [];
 
     for (const update of updates) {
-      const stageBucket = this.resolveStageBucket(update.emojiCounts, update.heartCount);
+      const stageBucket = this.resolveStageBucket(update.emojiCounts);
       const hasMessageIdentity = Boolean(update.chatId) && update.messageId !== null;
       const enqueueKey = hasMessageIdentity
         ? `reaction:${update.chatId}:${update.messageId}:stage:${stageBucket}`
@@ -75,7 +75,6 @@ export class TelegramWebhookController {
             updateId: update.updateId,
             chatId: update.chatId,
             messageId: update.messageId,
-            heartCount: update.heartCount,
             emojiCounts: update.emojiCounts,
             receivedAt: new Date().toISOString(),
           },
@@ -125,16 +124,12 @@ export class TelegramWebhookController {
     };
   }
 
-  private resolveStageBucket(
-    emojiCounts: Record<string, number> | null | undefined,
-    heartCount: number | null,
-  ): string {
+  private resolveStageBucket(emojiCounts: Record<string, number> | null | undefined): string {
     const stage = resolveStageForReactionCounts(this.reactionStages, emojiCounts);
     if (stage) {
       return `${stage.index}:${stage.stage.code}`;
     }
 
-    const legacyHeartCount = Number.isFinite(heartCount) ? Math.max(0, Math.floor(Number(heartCount))) : 0;
-    return legacyHeartCount > 0 ? `legacy-heart:${legacyHeartCount}` : "none";
+    return "none";
   }
 }
