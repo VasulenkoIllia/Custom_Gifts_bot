@@ -61,6 +61,20 @@ test("buildPreviewCaption includes engraving and sticker text when present", () 
   assert.match(caption, /\nСтікер:\n- Любимо тебе/);
 });
 
+test("buildPreviewCaption includes product quantities when provided", () => {
+  const caption = buildPreviewCaption({
+    orderId: "29565",
+    previewDetails: {
+      quantityLines: ["PhotoPosterA5WoodWW × 5 шт"],
+      engravingTexts: [],
+      stickerTexts: [],
+    },
+  });
+
+  assert.match(caption, /^Замовлення 29565\nПрев'ю макету/);
+  assert.match(caption, /\nКількість:\n- PhotoPosterA5WoodWW × 5 шт/);
+});
+
 test("sendOrderFilesToTelegram keeps preview ids separate from file message ids", async (t) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "telegram-client-test-"));
   const pdfPath = path.join(tempDir, "CGU_AA5_29403_1_1.pdf");

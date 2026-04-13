@@ -51,6 +51,7 @@ type BuildCaptionParams = {
 export type PreviewCaptionDetails = {
   engravingTexts: string[];
   stickerTexts: string[];
+  quantityLines?: string[];
 };
 
 export type SendOrderFilesInput = {
@@ -286,6 +287,9 @@ export function buildPreviewCaption(params: {
   orderId: string;
   previewDetails?: PreviewCaptionDetails | null;
 }): string {
+  const quantityLines = Array.isArray(params.previewDetails?.quantityLines)
+    ? params.previewDetails.quantityLines.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
   const engravingTexts = Array.isArray(params.previewDetails?.engravingTexts)
     ? params.previewDetails.engravingTexts.map((item) => String(item ?? "").trim()).filter(Boolean)
     : [];
@@ -294,6 +298,13 @@ export function buildPreviewCaption(params: {
     : [];
 
   const lines: string[] = [`Замовлення ${params.orderId}`, "Прев'ю макету"];
+
+  if (quantityLines.length > 0) {
+    lines.push("", "Кількість:");
+    for (const line of quantityLines) {
+      lines.push(`- ${line}`);
+    }
+  }
 
   if (engravingTexts.length > 0) {
     lines.push("", "Гравіювання:");

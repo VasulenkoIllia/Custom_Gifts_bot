@@ -228,6 +228,10 @@ function buildDeliveryKey(input: {
       .filter(Boolean)
       .sort(),
     previewDetails: {
+      quantityLines: [...(input.previewDetails?.quantityLines ?? [])]
+        .map((item) => String(item ?? "").trim())
+        .filter(Boolean)
+        .sort(),
       engravingTexts: [...(input.previewDetails?.engravingTexts ?? [])]
         .map((item) => String(item ?? "").trim())
         .filter(Boolean)

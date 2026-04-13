@@ -1,3 +1,4 @@
+import type { KeycrmOrderProduct } from "../domain/orders/order.types";
 import type { CrmClient } from "../modules/crm/crm-client";
 import {
   extractErrorMessage,
@@ -187,10 +188,63 @@ function normalizeStatusId(value: unknown): number | null {
   return parsed;
 }
 
-function buildPreviewDetails(layoutPlan: LayoutPlan): {
+function hasParentKey(product: KeycrmOrderProduct): boolean {
+  if (!Array.isArray(product.properties)) {
+    return false;
+  }
+
+  for (const property of product.properties) {
+    const name = String(property?.name ?? "").trim().toLowerCase();
+    if (name !== "_parentkey") {
+      continue;
+    }
+    if (String(property?.value ?? "").trim()) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function parsePositiveQuantity(value: unknown): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 1;
+  }
+  return parsed;
+}
+
+function buildQuantityLines(orderProducts: KeycrmOrderProduct[]): string[] {
+  if (!Array.isArray(orderProducts) || orderProducts.length === 0) {
+    return [];
+  }
+
+  const baseProducts = orderProducts.filter((product) => !hasParentKey(product));
+  if (baseProducts.length === 0) {
+    return [];
+  }
+
+  const quantities = new Map<string, number>();
+  for (const product of baseProducts) {
+    const label =
+      String(product.offer?.sku ?? product.sku ?? "").trim() ||
+      String(product.name ?? "").trim() ||
+      "Товар";
+    const quantity = parsePositiveQuantity(
+      (product as KeycrmOrderProduct & { quantity?: unknown }).quantity,
+    );
+    quantities.set(label, (quantities.get(label) ?? 0) + quantity);
+  }
+
+  return Array.from(quantities.entries()).map(([label, quantity]) => `${label} × ${quantity} шт`);
+}
+
+function buildPreviewDetails(layoutPlan: LayoutPlan, orderProducts: KeycrmOrderProduct[]): {
+  quantityLines: string[];
   engravingTexts: string[];
   stickerTexts: string[];
 } {
+  const quantityLines = buildQuantityLines(orderProducts);
   const engravingTexts = layoutPlan.materials
     .filter((material) => material.type === "engraving")
     .map((material) => String(material.text ?? "").trim())
@@ -201,6 +255,7 @@ function buildPreviewDetails(layoutPlan: LayoutPlan): {
     .filter(Boolean);
 
   return {
+    quantityLines,
     engravingTexts,
     stickerTexts,
   };
@@ -403,7 +458,10 @@ export function createOrderIntakeWorker({
     const telegramWarnings = Array.from(
       new Set([...layoutPlan.notes, ...pdfResult.warnings]),
     );
-    const previewDetails = buildPreviewDetails(layoutPlan);
+    const previewDetails = buildPreviewDetails(
+      layoutPlan,
+      Array.isArray(order.products) ? order.products : [],
+    );
     const captionQrUrl = resolveCaptionQrUrl({
       layoutPlan,
       generatedFiles: pdfResult.generated,
