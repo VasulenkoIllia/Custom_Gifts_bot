@@ -106,7 +106,7 @@ const materialGeneratorRuntime = require("../src/modules/pdf/material-generator.
       widthPt: number,
       heightPt: number,
       emojiRuntime?: unknown,
-      options?: { initialScale?: number },
+      options?: { initialScale?: number; minFontSize?: number; maxFontSize?: number },
     ) => { fontSize: number; lines: string[] };
   };
 };
@@ -535,9 +535,10 @@ test("fitTextToBox caps sticker text size lower than default box fill", async ()
     widthPt,
     heightPt,
     null,
-    { initialScale: 0.34 },
+    { initialScale: 0.34, maxFontSize: 36 },
   );
 
   assert.ok(stickerFit.fontSize < defaultFit.fontSize);
+  assert.equal(stickerFit.fontSize, 36);
   assert.ok(stickerFit.fontSize <= Math.floor(Math.min(widthPt, heightPt) * 0.34));
 });

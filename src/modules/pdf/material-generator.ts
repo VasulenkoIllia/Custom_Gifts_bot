@@ -25,6 +25,7 @@ const A3_WIDTH_MM = 297;
 const A3_HEIGHT_MM = 420;
 const DEFAULT_STICKER_SIZE_MM = 100;
 const DEFAULT_FONT_SIZE = 28;
+const DEFAULT_STICKER_FONT_SIZE_PT = 36;
 const MIN_FONT_SIZE = 4;
 const DEFAULT_TEXT_BOX_INITIAL_SCALE = 0.65;
 const STICKER_TEXT_BOX_INITIAL_SCALE = 0.34;
@@ -2139,13 +2140,20 @@ function fitTextToBox(
   widthPt: number,
   heightPt: number,
   emojiRuntime: EmojiRuntime | null = null,
-  options: { initialScale?: number } = {},
+  options: { initialScale?: number; minFontSize?: number; maxFontSize?: number } = {},
 ): { fontSize: number; lines: string[] } {
   const initialScale = Math.min(
     1,
     Math.max(0.2, Number(options.initialScale ?? DEFAULT_TEXT_BOX_INITIAL_SCALE)),
   );
-  let fontSize = Math.max(DEFAULT_FONT_SIZE, Math.floor(Math.min(widthPt, heightPt) * initialScale));
+  const minFontSize = Number.isFinite(Number(options.minFontSize))
+    ? Math.max(MIN_FONT_SIZE, Math.floor(Number(options.minFontSize)))
+    : DEFAULT_FONT_SIZE;
+  const maxFontSize = Number.isFinite(Number(options.maxFontSize))
+    ? Math.max(minFontSize, Math.floor(Number(options.maxFontSize)))
+    : Number.POSITIVE_INFINITY;
+  let fontSize = Math.max(minFontSize, Math.floor(Math.min(widthPt, heightPt) * initialScale));
+  fontSize = Math.min(fontSize, maxFontSize);
   let lines: string[] = [];
 
   while (fontSize >= MIN_FONT_SIZE) {
@@ -2180,7 +2188,7 @@ async function drawTextInBox(
   box: { x: number; y: number; width: number; height: number },
   emojiRuntime: EmojiRuntime | null,
   warnings: string[],
-  fitOptions: { initialScale?: number } = {},
+  fitOptions: { initialScale?: number; minFontSize?: number; maxFontSize?: number } = {},
 ): Promise<void> {
   const fit = fitTextToBox(fontSet, text, box.width, box.height, emojiRuntime, fitOptions);
   const lineMetrics = getLineMetrics(fontSet.primary, fit.fontSize);
@@ -2301,7 +2309,10 @@ async function createStickerPdf(options: {
     },
     emojiRuntime,
     warnings,
-    { initialScale: STICKER_TEXT_BOX_INITIAL_SCALE },
+    {
+      initialScale: STICKER_TEXT_BOX_INITIAL_SCALE,
+      maxFontSize: DEFAULT_STICKER_FONT_SIZE_PT,
+    },
   );
 
   const pdfBytes = await pdfDoc.save();
@@ -2692,6 +2703,7 @@ export async function generateMaterialFiles(
       const changedPixels =
         ((passStats?.replaced_pixels as number) ?? 0) +
         ((passStats?.cleanup_replaced_pixels as number) ?? 0) +
+        ((passStats?.hard_cleanup_replaced_pixels as number) ?? 0) +
         ((passStats?.forced_opaque_pixels as number) ?? 0);
       if (changedPixels <= 0) break;
     }
@@ -2741,6 +2753,7 @@ export async function generateMaterialFiles(
       const changedPixels =
         ((passStats?.replaced_pixels as number) ?? 0) +
         ((passStats?.cleanup_replaced_pixels as number) ?? 0) +
+        ((passStats?.hard_cleanup_replaced_pixels as number) ?? 0) +
         ((passStats?.forced_opaque_pixels as number) ?? 0);
       if (changedPixels <= 0) break;
     }
