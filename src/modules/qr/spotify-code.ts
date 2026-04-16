@@ -337,8 +337,11 @@ export function sanitizeSpotifyScannableSvg(svgSource: string, codeHex: string):
   return output;
 }
 
-async function rasterizeSpotifySvgToPng(svgSource: string): Promise<Buffer> {
-  return await sharp(Buffer.from(svgSource, "utf8")).png().toBuffer();
+async function rasterizeSpotifySvgToPng(svgSource: string, targetWidthPx: number): Promise<Buffer> {
+  return await sharp(Buffer.from(svgSource, "utf8"))
+    .resize(targetWidthPx)
+    .png()
+    .toBuffer();
 }
 
 export async function embedSpotifyCodeIntoPosterPdf(params: {
@@ -363,7 +366,9 @@ export async function embedSpotifyCodeIntoPosterPdf(params: {
     requestOptions: params.requestOptions,
   });
   const sanitizedSvg = sanitizeSpotifyScannableSvg(svgSource, codeHex);
-  const imageBytes = await rasterizeSpotifySvgToPng(sanitizedSvg);
+  // Render at 600 DPI equivalent for the target physical size to avoid upscaling artifacts.
+  const targetWidthPx = Math.ceil((params.placement.widthMm / 25.4) * 600);
+  const imageBytes = await rasterizeSpotifySvgToPng(sanitizedSvg, targetWidthPx);
   const image = await pdfDoc.embedPng(imageBytes);
 
   const widthPt = mmToPt(params.placement.widthMm);

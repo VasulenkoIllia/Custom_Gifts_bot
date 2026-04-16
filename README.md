@@ -33,7 +33,9 @@ TypeScript-сервіс для повного циклу обробки замо
    - `_tib_design_link_1` є, але CDN/TeeInBlue дає `403/404` -> CRM статус не змінюємо, тільки шлемо alert `Не вдалося сформувати PDF`.
 6. Якщо ранніх блокерів немає, запускається PDF pipeline.
 7. Готові preview і PDF летять у Telegram topic `ОБРОБКА`.
-   - перше preview показує також текст гравіювання і стікера, якщо вони є;
+   - перше preview показує блок `Кількість` у форматі `<SKU> × N шт` для базових товарів;
+   - товари-аддони з `_parentKey` (наприклад, терміновість) окремо в блоці `Кількість` не дублюються;
+   - якщо є текстові матеріали, preview також показує текст гравіювання і стікера;
    - у стікері emoji автоматично вирізаються, лишається тільки plain text.
 8. Оператор ставить `❤️` під PDF.
 9. `reaction-worker` змінює CRM статус на `22 / Друк` і копіює PDF у topic `ЗАМОВЛЕННЯ`.
@@ -151,6 +153,18 @@ docker compose -f docker-compose.prod.yml --env-file .env.production exec receiv
 - фінальні PDF не видаляються одразу після Telegram delivery
 - вони чистяться retention-процесом за `OUTPUT_RETENTION_HOURS`
 - temp-артефакти додатково чистяться всередині самого PDF pipeline
+
+## Приклад preview caption
+
+Для order `29565` (базовий товар `PhotoPosterA5WoodWW`, `quantity=5`) preview caption виглядає так:
+
+```text
+Замовлення 29565
+Прев'ю макету
+
+Кількість:
+- PhotoPosterA5WoodWW × 5 шт
+```
 
 ## Документація
 

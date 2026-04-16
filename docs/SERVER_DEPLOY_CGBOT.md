@@ -15,21 +15,58 @@
 - DNS `cgbot.workflo.space` already points to the server IP
 - certificate resolver name is `cf`
 
-## 3. Start sequence
+## 3. Production update sequence (verified)
 ```bash
+git fetch --all --prune
+git checkout main
+git pull --ff-only
+
 docker network inspect proxy >/dev/null 2>&1 || docker network create proxy
+
+# optional: stop app services to avoid restart-loop noise during migration
+docker compose -f docker-compose.prod.yml --env-file .env.production stop receiver order-worker reaction-worker
+
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d postgres
 docker compose -f docker-compose.prod.yml --env-file .env.production --profile ops run --rm migrate
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build receiver order-worker reaction-worker
-curl -fsS https://cgbot.workflo.space/health
 ```
 
-Recommended checks right after start:
+Recommended checks right after update:
 ```bash
 docker compose -f docker-compose.prod.yml --env-file .env.production ps
 docker compose -f docker-compose.prod.yml --env-file .env.production logs --tail=100 receiver
 docker compose -f docker-compose.prod.yml --env-file .env.production logs --tail=100 order-worker
 docker compose -f docker-compose.prod.yml --env-file .env.production logs --tail=100 reaction-worker
+
+# internal app check (inside receiver container)
+docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver \
+  node -e "fetch('http://127.0.0.1:3000/health').then(async r=>{console.log(r.status);console.log(await r.text())}).catch(e=>{console.error(e);process.exit(1)})"
+
+# local Traefik check from the server host
+curl -sk https://127.0.0.1/health -H 'Host: cgbot.workflo.space'
+
+# external domain check
+curl -fsS https://cgbot.workflo.space/health
+```
+
+Important:
+- use `GET` checks for `/health` (`curl .../health`);
+- `curl -I`/HEAD can return `404`, because runtime handler exposes `/health` for `GET`.
+
+### 3.1 Quick failure diagnosis
+If app services keep restarting with:
+`Missing migration 0002_retention_performance_indexes.sql...`
+
+run migration explicitly:
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production --profile ops run --rm migrate
+```
+
+and verify:
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production exec -T postgres \
+  psql -U "${POSTGRES_USER:-custom_gifts}" -d "${POSTGRES_DB:-custom_gifts_bot}" \
+  -c "SELECT filename, applied_at FROM schema_migrations ORDER BY filename;"
 ```
 
 ## 4. Webhooks

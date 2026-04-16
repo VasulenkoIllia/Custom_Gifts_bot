@@ -290,6 +290,7 @@ export class PdfPipelineService {
       replaceWhiteWithOffWhite: true,
       offWhiteHex: this.offWhiteHex,
       rasterizeDpi: this.rasterizeDpi,
+      whiteFinalDpi: this.rasterizeDpi,
       sourceRequestOptions: this.sourceRequestOptions,
     });
 

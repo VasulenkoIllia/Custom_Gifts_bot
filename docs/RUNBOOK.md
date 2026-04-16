@@ -202,24 +202,43 @@ PGPASSWORD=custom_gifts psql -h 127.0.0.1 -p 5433 -U custom_gifts -d custom_gift
    - `TELEGRAM_BOT_TOKEN`
    - `KEYCRM_WEBHOOK_SECRET`
    - `TELEGRAM_REACTION_SECRET_TOKEN`
-3. Переконатись, що DNS для `APP_DOMAIN` вже вказує на сервер, а Traefik має доступ до external network `TRAEFIK_NETWORK`.
-4. Підняти PostgreSQL:
+3. Оновити код на сервері:
+   - `git fetch --all --prune`
+   - `git checkout main`
+   - `git pull --ff-only`
+4. Переконатись, що DNS для `APP_DOMAIN` вже вказує на сервер, а Traefik має доступ до external network `TRAEFIK_NETWORK`.
+5. Переконатись, що Docker network для Traefik існує:
+   - `docker network inspect proxy >/dev/null 2>&1 || docker network create proxy`
+6. (Опційно) зупинити app-контейнери перед міграціями, щоб прибрати restart-loop noise:
+   - `docker compose -f docker-compose.prod.yml --env-file .env.production stop receiver order-worker reaction-worker`
+7. Підняти PostgreSQL:
    - `docker compose -f docker-compose.prod.yml --env-file .env.production up -d postgres`
-5. Прогнати міграції:
+8. Прогнати міграції:
    - `docker compose -f docker-compose.prod.yml --env-file .env.production --profile ops run --rm migrate`
-6. Підняти прод-сервіси:
+9. Підняти прод-сервіси:
    - `docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build receiver order-worker reaction-worker`
-7. Перевірити health:
+10. Перевірити стан контейнерів:
+   - `docker compose -f docker-compose.prod.yml --env-file .env.production ps`
+11. Перевірити health (через Traefik і зовні):
+   - `curl -sk https://127.0.0.1/health -H 'Host: <APP_DOMAIN>'`
    - `curl -fsS https://<APP_DOMAIN>/health`
-8. Перезапуск після оновлення коду:
+12. Перезапуск після наступних оновлень коду:
    - `docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build receiver order-worker reaction-worker`
 
 Примітки:
 - production image already includes `tzdata`, `ghostscript` і compiled `dist/scripts/*`;
 - app services run with `init: true`, що важливо для дочірніх процесів PDF pipeline;
 - operational scripts on the server should be executed from the container through `npm run ...`, not through `tsx src/...`.
+- для `/health` використовуйте `GET`; `curl -I` (HEAD) може давати `404`, бо endpoint обробляється як `GET`.
 
-### 2.2.1 Production ops/test commands from the container
+### 2.2.1 Якщо після оновлення сервіси падають у restart-loop
+1. Перевірити логи `receiver/order-worker/reaction-worker`.
+2. Якщо є помилка `Missing migration ...`, повторно застосувати:
+   - `docker compose -f docker-compose.prod.yml --env-file .env.production --profile ops run --rm migrate`
+3. Перевірити таблицю міграцій:
+   - `docker compose -f docker-compose.prod.yml --env-file .env.production exec -T postgres psql -U "${POSTGRES_USER:-custom_gifts}" -d "${POSTGRES_DB:-custom_gifts_bot}" -c "SELECT filename, applied_at FROM schema_migrations ORDER BY filename;"`
+
+### 2.2.2 Production ops/test commands from the container
 Snapshot statuses:
 - `docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver npm run test:orders:snapshot -- --order-ids=29068,29069`
 
@@ -281,6 +300,10 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
    - poster має проходити legacy-aggressive white cleanup;
    - залишковий чистий білий не повинен лишатися;
    - обробка може бути довша через додаткові ітерації recolor/final cleanup.
+11. Для preview-повідомлення в `ОБРОБКА`:
+   - перше preview має містити блок `Кількість` у форматі `<SKU> × N шт`;
+   - в кількість входять базові товари (позиції без `_parentKey`);
+   - аддони (`_parentKey`) окремими рядками в блоці `Кількість` не дублюються.
 
 ## 4. Реакція на інциденти
 ### 4.1 Deterministic missing-file

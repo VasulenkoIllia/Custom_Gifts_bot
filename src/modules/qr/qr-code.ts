@@ -68,9 +68,12 @@ export async function embedQrIntoPosterPdf(params: {
   }
 
   const darkHex = normalizeHexColor(params.qrHex ?? "FFFEFA");
+  // Render at 600 DPI equivalent for the target physical size to avoid upscaling artifacts.
+  const qrSizePx = Math.ceil((params.placement.widthMm / 25.4) * 600);
   const qrPng = await QRCode.toBuffer(params.qrUrl, {
     errorCorrectionLevel: "M",
     margin: 1,
+    width: qrSizePx,
     color: {
       dark: `#${darkHex}`,
       light: "#0000",
