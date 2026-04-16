@@ -1064,6 +1064,10 @@ function recolorWhitePngInPlace(options: RecolorWhiteOptions): RecolorWhiteStats
 
   if (safeMode === "photoshop_like" && safeFeatherPx > 0.34) {
     const blurRadius = Math.max(1, Math.round(safeFeatherPx));
+    // Dilate first: expands detected white regions outward to cover anti-aliased
+    // edge pixels before blurring for smooth feathering.
+    const dilateRadius = Math.max(1, Math.round(safeFeatherPx * 0.5));
+    dilateMaskInPlace(selectedMask, png.width, png.height, dilateRadius);
     blurMaskInPlace(selectedMask, png.width, png.height, blurRadius);
     filledHolePixels += fillMaskPinholes({
       png,
@@ -1232,6 +1236,65 @@ function blurMaskInPlace(
   const temp = new Float32Array(mask.length);
   boxBlurHorizontal(mask, temp, width, height, radius);
   boxBlurVertical(temp, mask, width, height, radius);
+}
+
+// ---------------------------------------------------------------------------
+// Morphological dilation (max-filter): expands mask outward to catch
+// anti-aliased edge pixels that are adjacent to detected white regions.
+// Uses separable 1D max passes for O(n*r) performance.
+// ---------------------------------------------------------------------------
+
+function dilateMaxHorizontal(
+  source: Float32Array,
+  target: Float32Array,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let maxVal = 0;
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        const nx = clamp(x + dx, 0, width - 1);
+        const val = source[y * width + nx]!;
+        if (val > maxVal) maxVal = val;
+      }
+      target[y * width + x] = maxVal;
+    }
+  }
+}
+
+function dilateMaxVertical(
+  source: Float32Array,
+  target: Float32Array,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  for (let x = 0; x < width; x += 1) {
+    for (let y = 0; y < height; y += 1) {
+      let maxVal = 0;
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        const ny = clamp(y + dy, 0, height - 1);
+        const val = source[ny * width + x]!;
+        if (val > maxVal) maxVal = val;
+      }
+      target[y * width + x] = maxVal;
+    }
+  }
+}
+
+function dilateMaskInPlace(
+  mask: Float32Array,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  if (radius <= 0) return;
+
+  const temp = new Float32Array(mask.length);
+  dilateMaxHorizontal(mask, temp, width, height, radius);
+  dilateMaxVertical(temp, mask, width, height, radius);
 }
 
 // ---------------------------------------------------------------------------
@@ -2524,16 +2587,16 @@ export async function generateMaterialFiles(
     whiteMaxSaturation = 0.03,
     rasterizeDpi = 300,
     whiteReplaceMode = "photoshop_like",
-    whiteLabDeltaEMax = 3,
-    whiteLabSoftness = 1,
-    whiteMinLightness = 99.5,
-    whiteFeatherPx = 0.35,
+    whiteLabDeltaEMax = 5,
+    whiteLabSoftness = 2.5,
+    whiteMinLightness = 98.0,
+    whiteFeatherPx = 2.0,
     whiteMinAlpha = 0,
     whiteCleanupPasses = 3,
-    whiteCleanupMinChannel = 248,
+    whiteCleanupMinChannel = 244,
     whiteCleanupMaxSaturation = 0.35,
     whiteHardCleanupPasses = 2,
-    whiteHardCleanupMinChannel = 246,
+    whiteHardCleanupMinChannel = 242,
     whiteHardCleanupMinLightness = 98.5,
     whiteHardCleanupDeltaEMax = 14,
     whiteHardCleanupMaxSaturation = 0.6,
