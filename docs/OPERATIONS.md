@@ -159,6 +159,33 @@
 - Spotify overlay poster має ще один додатковий post-overlay off-white pass;
 - обробка стала повільнішою, але стабільнішою проти залишкового білого.
 
+## 5.5 PDF Quality: DPI optimization (final white cleanup & QR/Spotify rendering)
+Pipeline тепер забезпечує максимальну якість на всіх етапах за допомогою правильної DPI-конверсії:
+
+**Final white cleanup DPI:**
+- Параметр `whiteFinalDpi` тепер дорівнює `RASTERIZE_DPI` (за замовчуванням `600`)
+- Раніше final cleanup працював на hardcoded DPI=300, що вдвічі зменшувало якість на останньому пасі
+- Тепер весь pipeline від rasterization до final cleanup тримає однакову 600 DPI якість
+
+**QR код (звичайний QR):**
+- Рендеруються на 600 DPI-еквіваленті цільового фізичного розміру замість дефолтного ~100px
+- Формула: `qrSizePx = Math.ceil((widthMm / 25.4) * 600)`
+- Приклади:
+  - A5 QR (20mm): 100px → 472px
+  - A4 QR (30mm): 100px → 709px
+- Результат: усунення upscaling артефактів при вбудовуванні в PDF
+
+**Spotify scannable SVG:**
+- Рендеруються через `sharp.resize()` на тій же 600 DPI-еквіваленті цільового розміру
+- Раніше Spotify код був downsampled з API 640px до потрібного розміру (наприклад, ~709px для A4), що створювало артефакти
+- Тепер A4 Spotify коди більше не втрачають якість при resize
+
+Практична імпліка:
+- QR і Spotify коди виглядають чіткіше з урахуванням фізичного розміру в макеті
+- Жодних видимих артефактів upscaling
+- Фінальна білизна чиститься із однаковою якістю як весь решта pipeline
+- RAM спожив лишається в межах 600 DPI (~250-500 MB для A5, ~450-900 MB для A4 на один job)
+
 ## 6. Що вважати transient помилкою
 - timeout CRM
 - timeout Spotify/scannables

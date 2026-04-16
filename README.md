@@ -78,6 +78,11 @@ TypeScript-сервіс для повного циклу обробки замо
   - `WHITE_REPLACE_ITERATIONS = 3`
   - `WHITE_FINAL_ITERATIONS = 3`
   - жорсткіший near-white selection для прибирання залишкового білого
+  - final white cleanup тепер працює на тій же DPI, що й основна rasterization (`RASTERIZE_DPI=600`), а не на hardcoded 300 — це запобігає втраті якості на останньому пасі
+- QR і Spotify code рендеруються на 600 DPI-еквіваленті цільового фізичного розміру (не на дефолтному ~100px для QR чи 640px для Spotify API):
+  - A5 QR: ~100px → 472px
+  - A4 QR: ~100px → 709px
+  - це усуває артефакти upscaling при вбудовуванні в PDF
 - решта технічних помилок типізуються і відправляються в retry / DLQ
 
 ## Як зараз працюють retry
