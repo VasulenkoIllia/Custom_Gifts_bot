@@ -698,25 +698,49 @@ export class PdfPipelineService {
     let correctedPixels = 0;
 
     for (const generatedFile of generatedFiles) {
-      const stats = await enforce({
-        filePath: generatedFile.path,
-        offWhiteHex: this.offWhiteHex,
-        rasterizeDpi: this.rasterizeDpi,
-      });
+      const details =
+        generatedFile.details && typeof generatedFile.details === "object"
+          ? (generatedFile.details as Record<string, unknown>)
+          : null;
+      const finalStageStats =
+        details?.white_recolor_final && typeof details.white_recolor_final === "object"
+          ? (details.white_recolor_final as Record<string, unknown>)
+          : null;
 
-      if (this.colorSpace === "CMYK") {
-        await this.convertPdfToCmykInPlace(generatedFile.path);
+      const initialResidual = this.extractResidualWhiteCounts(finalStageStats);
+      const shouldRetry = this.hasResidualWhiteCounts(initialResidual);
+      let residualAfterRetry = initialResidual;
+      let fileCorrectedPixels = 0;
+
+      if (shouldRetry) {
+        const stats = await enforce({
+          filePath: generatedFile.path,
+          offWhiteHex: this.offWhiteHex,
+          rasterizeDpi: this.rasterizeDpi,
+        });
+        residualAfterRetry = this.extractResidualWhiteCounts(stats);
+        fileCorrectedPixels = this.extractCorrectedPixelCount(stats);
+        correctedPixels += fileCorrectedPixels;
+
+        if (this.colorSpace === "CMYK") {
+          await this.convertPdfToCmykInPlace(generatedFile.path);
+        }
       }
 
-      const fileCorrectedPixels = this.extractCorrectedPixelCount(stats);
-      correctedPixels += fileCorrectedPixels;
+      const preflightFailedAfterRetry = shouldRetry && this.hasResidualWhiteCounts(residualAfterRetry);
       generatedFile.details = {
         ...generatedFile.details,
         final_preflight: {
-          applied: true,
+          applied: shouldRetry,
+          retry_triggered: shouldRetry,
+          preflight_failed_after_retry: preflightFailedAfterRetry,
           corrected_pixels: fileCorrectedPixels,
           color_space: this.colorSpace,
           off_white_hex: this.offWhiteHex,
+          residual_strict_white_pixels: residualAfterRetry.strict,
+          residual_aggressive_white_pixels: residualAfterRetry.aggressive,
+          residual_strict_low_alpha_white_pixels: residualAfterRetry.strictLowAlpha,
+          residual_aggressive_low_alpha_white_pixels: residualAfterRetry.aggressiveLowAlpha,
         },
       };
     }
@@ -725,6 +749,55 @@ export class PdfPipelineService {
       filesProcessed: generatedFiles.length,
       correctedPixels,
     };
+  }
+
+  private readPositiveCount(source: Record<string, unknown>, key: string): number {
+    if (!(key in source)) {
+      return 0;
+    }
+
+    const value = Number(source[key]);
+    if (!Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+
+    return Math.max(0, Math.floor(value));
+  }
+
+  private extractResidualWhiteCounts(stats: unknown): {
+    strict: number;
+    aggressive: number;
+    strictLowAlpha: number;
+    aggressiveLowAlpha: number;
+  } {
+    if (!stats || typeof stats !== "object") {
+      return {
+        strict: 0,
+        aggressive: 0,
+        strictLowAlpha: 0,
+        aggressiveLowAlpha: 0,
+      };
+    }
+
+    const source = stats as Record<string, unknown>;
+    return {
+      strict: this.readPositiveCount(source, "residual_strict_white_pixels"),
+      aggressive: this.readPositiveCount(source, "residual_aggressive_white_pixels"),
+      strictLowAlpha: this.readPositiveCount(source, "residual_strict_low_alpha_white_pixels"),
+      aggressiveLowAlpha: this.readPositiveCount(
+        source,
+        "residual_aggressive_low_alpha_white_pixels",
+      ),
+    };
+  }
+
+  private hasResidualWhiteCounts(counts: {
+    strict: number;
+    aggressive: number;
+    strictLowAlpha: number;
+    aggressiveLowAlpha: number;
+  }): boolean {
+    return counts.strict > 0 || counts.aggressive > 0;
   }
 
   private extractCorrectedPixelCount(stats: unknown): number {

@@ -19,6 +19,8 @@
 - [docs/STORAGE_RETENTION.md](./STORAGE_RETENTION.md)
 - [docs/MANUAL_UAT_CHECKLIST.md](./MANUAL_UAT_CHECKLIST.md)
 - [docs/LOCAL_REAL_MODE_TESTING.md](./LOCAL_REAL_MODE_TESTING.md)
+- [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](./WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
+  - впровадження `Smart retry` для white cleanup + A/B результати на live-order set.
 
 ## Історичні та планові документи
 Ці файли збережені як історія рішень і міграції; вони не є джерелом актуального runtime-контракту:

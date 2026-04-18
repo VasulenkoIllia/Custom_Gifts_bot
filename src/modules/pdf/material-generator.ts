@@ -144,6 +144,10 @@ type RecolorWhiteStats = {
   hardCleanupCandidatePixels: number;
   hardCleanupReplacedPixels: number;
   zeroedTransparentPixels: number;
+  residualStrictWhitePixels: number;
+  residualAggressiveWhitePixels: number;
+  residualStrictLowAlphaWhitePixels: number;
+  residualAggressiveLowAlphaWhitePixels: number;
   mode: string;
   premultiplied_input: boolean;
 };
@@ -977,6 +981,78 @@ function applyWhiteMaskToPng(options: ApplyMaskOptions): {
   return { recoloredPixels, forcedOpaquePixels };
 }
 
+function measureResidualNearWhitePixels(options: {
+  png: PNG;
+  premultiplied: boolean;
+  minAlpha?: number;
+  lowAlphaThreshold?: number;
+  strictThreshold?: number;
+  strictMaxSaturation?: number;
+  aggressiveThreshold?: number;
+  aggressiveMaxSaturation?: number;
+}): {
+  strictWhitePixels: number;
+  aggressiveWhitePixels: number;
+  strictLowAlphaWhitePixels: number;
+  aggressiveLowAlphaWhitePixels: number;
+} {
+  const {
+    png,
+    premultiplied,
+    minAlpha = 0,
+    lowAlphaThreshold = 40,
+    strictThreshold = 254,
+    strictMaxSaturation = 0.25,
+    aggressiveThreshold = 252,
+    aggressiveMaxSaturation = 0.03,
+  } = options;
+  const pixelsCount = png.width * png.height;
+
+  let strictWhitePixels = 0;
+  let aggressiveWhitePixels = 0;
+  let strictLowAlphaWhitePixels = 0;
+  let aggressiveLowAlphaWhitePixels = 0;
+
+  for (let pixelIndex = 0; pixelIndex < pixelsCount; pixelIndex += 1) {
+    const dataIndex = pixelIndex * 4;
+    const alpha = png.data[dataIndex + 3]!;
+    if (alpha <= minAlpha) continue;
+
+    const rgbPixel = readWorkingRgb(png.data, dataIndex, alpha, premultiplied);
+    const isStrict = isNearWhitePixel({
+      ...rgbPixel,
+      threshold: strictThreshold,
+      maxSaturation: strictMaxSaturation,
+    });
+    const isAggressive = isNearWhitePixel({
+      ...rgbPixel,
+      threshold: aggressiveThreshold,
+      maxSaturation: aggressiveMaxSaturation,
+    });
+
+    if (isStrict) {
+      strictWhitePixels += 1;
+      if (alpha <= lowAlphaThreshold) {
+        strictLowAlphaWhitePixels += 1;
+      }
+    }
+
+    if (isAggressive) {
+      aggressiveWhitePixels += 1;
+      if (alpha <= lowAlphaThreshold) {
+        aggressiveLowAlphaWhitePixels += 1;
+      }
+    }
+  }
+
+  return {
+    strictWhitePixels,
+    aggressiveWhitePixels,
+    strictLowAlphaWhitePixels,
+    aggressiveLowAlphaWhitePixels,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // PNG recolor (in-place, synchronous)
 // ---------------------------------------------------------------------------
@@ -1149,6 +1225,11 @@ function recolorWhitePngInPlace(options: RecolorWhiteOptions): RecolorWhiteStats
   const zeroedTransparentPixels = safeSanitizeTransparentRgb
     ? sanitizeTransparentRgbInPlace(png)
     : 0;
+  const residualWhite = measureResidualNearWhitePixels({
+    png,
+    premultiplied,
+    minAlpha: 0,
+  });
 
   fs.writeFileSync(pngPath, PNG.sync.write(png));
 
@@ -1163,6 +1244,10 @@ function recolorWhitePngInPlace(options: RecolorWhiteOptions): RecolorWhiteStats
     hardCleanupCandidatePixels,
     hardCleanupReplacedPixels,
     zeroedTransparentPixels,
+    residualStrictWhitePixels: residualWhite.strictWhitePixels,
+    residualAggressiveWhitePixels: residualWhite.aggressiveWhitePixels,
+    residualStrictLowAlphaWhitePixels: residualWhite.strictLowAlphaWhitePixels,
+    residualAggressiveLowAlphaWhitePixels: residualWhite.aggressiveLowAlphaWhitePixels,
     mode: safeMode,
     premultiplied_input: premultiplied,
   };
@@ -1581,6 +1666,10 @@ async function replaceWhiteInPdfWithOffWhiteInPlace(
     let hardCleanupCandidatePixels = 0;
     let hardCleanupReplacedPixels = 0;
     let zeroedTransparentPixels = 0;
+    let residualStrictWhitePixels = 0;
+    let residualAggressiveWhitePixels = 0;
+    let residualStrictLowAlphaWhitePixels = 0;
+    let residualAggressiveLowAlphaWhitePixels = 0;
 
     for (const pngPath of pngFiles) {
       const stats = recolorWhitePngInPlace({
@@ -1614,6 +1703,10 @@ async function replaceWhiteInPdfWithOffWhiteInPlace(
       hardCleanupCandidatePixels += stats.hardCleanupCandidatePixels;
       hardCleanupReplacedPixels += stats.hardCleanupReplacedPixels;
       zeroedTransparentPixels += stats.zeroedTransparentPixels;
+      residualStrictWhitePixels += stats.residualStrictWhitePixels;
+      residualAggressiveWhitePixels += stats.residualAggressiveWhitePixels;
+      residualStrictLowAlphaWhitePixels += stats.residualStrictLowAlphaWhitePixels;
+      residualAggressiveLowAlphaWhitePixels += stats.residualAggressiveLowAlphaWhitePixels;
       if (stats.premultiplied_input) premultipliedPages += 1;
     }
 
@@ -1672,6 +1765,10 @@ async function replaceWhiteInPdfWithOffWhiteInPlace(
       hard_cleanup_candidate_pixels: hardCleanupCandidatePixels,
       hard_cleanup_replaced_pixels: hardCleanupReplacedPixels,
       zeroed_transparent_pixels: zeroedTransparentPixels,
+      residual_strict_white_pixels: residualStrictWhitePixels,
+      residual_aggressive_white_pixels: residualAggressiveWhitePixels,
+      residual_strict_low_alpha_white_pixels: residualStrictLowAlphaWhitePixels,
+      residual_aggressive_low_alpha_white_pixels: residualAggressiveLowAlphaWhitePixels,
       premultiplied_pages: premultipliedPages,
       strip_soft_mask_requested: Boolean(stripSoftMask),
       strip_soft_mask_applied: stripSoftMaskApplied,
@@ -2650,6 +2747,7 @@ export async function generateMaterialFiles(
     ? Math.max(0, Math.min(1, Number(whiteHardCleanupMaxSaturation)))
     : 0.6;
   const safeWhiteSanitizeTransparentRgb = Boolean(whiteSanitizeTransparentRgb);
+  const smartRetryMaxAttempts = 2;
   const safeEmojiRenderMode =
     String(emojiRenderMode ?? "font").trim().toLowerCase() === "apple_image"
       ? ("apple_image" as const)
@@ -2728,14 +2826,48 @@ export async function generateMaterialFiles(
   const generated: PdfGeneratedFile[] = [];
   const failed: PdfFailedFile[] = [];
 
+  const readPositiveCount = (source: Record<string, unknown> | null, key: string): number => {
+    if (!source || !(key in source)) return 0;
+    const value = Number(source[key]);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return Math.max(0, Math.floor(value));
+  };
+
+  const evaluateWhitePreflight = (source: Record<string, unknown> | null) => {
+    const strict = readPositiveCount(source, "residual_strict_white_pixels");
+    const aggressive = readPositiveCount(source, "residual_aggressive_white_pixels");
+    const strictLowAlpha = readPositiveCount(source, "residual_strict_low_alpha_white_pixels");
+    const aggressiveLowAlpha = readPositiveCount(
+      source,
+      "residual_aggressive_low_alpha_white_pixels",
+    );
+
+    return {
+      strict,
+      aggressive,
+      strictLowAlpha,
+      aggressiveLowAlpha,
+      failed: strict > 0 || aggressive > 0,
+    };
+  };
+
   const applyWhiteRecolorWithIterations = async (opts: {
     filePath: string;
     stripSoftMask: boolean;
   }): Promise<Record<string, unknown>> => {
     let lastStats: Record<string, unknown> | null = null;
     let iterationsUsed = 0;
+    let smartRetryTriggered = false;
+    let preflight = {
+      strict: 0,
+      aggressive: 0,
+      strictLowAlpha: 0,
+      aggressiveLowAlpha: 0,
+      failed: false,
+    };
+    const maxAttempts = Math.max(1, Math.min(smartRetryMaxAttempts, safeWhiteReplaceIterations));
 
-    for (let pass = 0; pass < safeWhiteReplaceIterations; pass += 1) {
+    for (let pass = 0; pass < maxAttempts; pass += 1) {
       const passStats = await replaceWhiteInPdfWithOffWhiteInPlace({
         filePath: opts.filePath,
         offWhiteHex,
@@ -2762,19 +2894,27 @@ export async function generateMaterialFiles(
       });
       lastStats = passStats;
       iterationsUsed += 1;
+      preflight = evaluateWhitePreflight(passStats);
 
-      const changedPixels =
-        ((passStats?.replaced_pixels as number) ?? 0) +
-        ((passStats?.cleanup_replaced_pixels as number) ?? 0) +
-        ((passStats?.hard_cleanup_replaced_pixels as number) ?? 0) +
-        ((passStats?.forced_opaque_pixels as number) ?? 0);
-      if (changedPixels <= 0) break;
+      if (preflight.failed && pass + 1 < maxAttempts) {
+        smartRetryTriggered = true;
+        continue;
+      }
+      break;
     }
 
     return {
       ...(lastStats ?? {}),
       iterations_requested: safeWhiteReplaceIterations,
+      iterations_cap: maxAttempts,
       iterations_used: iterationsUsed,
+      smart_retry_enabled: true,
+      smart_retry_triggered: smartRetryTriggered,
+      preflight_failed_after_retry: preflight.failed,
+      preflight_residual_strict_white_pixels: preflight.strict,
+      preflight_residual_aggressive_white_pixels: preflight.aggressive,
+      preflight_residual_strict_low_alpha_white_pixels: preflight.strictLowAlpha,
+      preflight_residual_aggressive_low_alpha_white_pixels: preflight.aggressiveLowAlpha,
     };
   };
 
@@ -2788,8 +2928,17 @@ export async function generateMaterialFiles(
 
     let lastStats: Record<string, unknown> | null = null;
     let iterationsUsed = 0;
+    let smartRetryTriggered = false;
+    let preflight = {
+      strict: 0,
+      aggressive: 0,
+      strictLowAlpha: 0,
+      aggressiveLowAlpha: 0,
+      failed: false,
+    };
+    const maxAttempts = Math.max(1, Math.min(smartRetryMaxAttempts, safeWhiteFinalIterations));
 
-    for (let pass = 0; pass < safeWhiteFinalIterations; pass += 1) {
+    for (let pass = 0; pass < maxAttempts; pass += 1) {
       const passStats = await replaceWhiteInPdfWithOffWhiteInPlace({
         filePath: opts.filePath,
         offWhiteHex,
@@ -2812,20 +2961,28 @@ export async function generateMaterialFiles(
       });
       lastStats = passStats;
       iterationsUsed += 1;
+      preflight = evaluateWhitePreflight(passStats);
 
-      const changedPixels =
-        ((passStats?.replaced_pixels as number) ?? 0) +
-        ((passStats?.cleanup_replaced_pixels as number) ?? 0) +
-        ((passStats?.hard_cleanup_replaced_pixels as number) ?? 0) +
-        ((passStats?.forced_opaque_pixels as number) ?? 0);
-      if (changedPixels <= 0) break;
+      if (preflight.failed && pass + 1 < maxAttempts) {
+        smartRetryTriggered = true;
+        continue;
+      }
+      break;
     }
 
     return {
       ...(lastStats ?? {}),
       mode: "strict_final_near_white",
       iterations_requested: safeWhiteFinalIterations,
+      iterations_cap: maxAttempts,
       iterations_used: iterationsUsed,
+      smart_retry_enabled: true,
+      smart_retry_triggered: smartRetryTriggered,
+      preflight_failed_after_retry: preflight.failed,
+      preflight_residual_strict_white_pixels: preflight.strict,
+      preflight_residual_aggressive_white_pixels: preflight.aggressive,
+      preflight_residual_strict_low_alpha_white_pixels: preflight.strictLowAlpha,
+      preflight_residual_aggressive_low_alpha_white_pixels: preflight.aggressiveLowAlpha,
     };
   };
 

@@ -74,11 +74,12 @@ TypeScript-сервіс для повного циклу обробки замо
     - якщо `preview` немає -> CRM `40 / Без файлу`
   - `немає тексту для engraving/sticker` -> CRM `40 / Без файлу`
   - `_tib_design_link_1` є, але CDN дає `403/404` -> CRM статус не змінюється, у Telegram іде alert `Не вдалося сформувати PDF`
-- white cleanup повернутий до legacy-aggressive preset:
-  - `WHITE_REPLACE_ITERATIONS = 3`
-  - `WHITE_FINAL_ITERATIONS = 3`
-  - жорсткіший near-white selection для прибирання залишкового білого
-  - final white cleanup тепер працює на тій же DPI, що й основна rasterization (`RASTERIZE_DPI=600`), а не на hardcoded 300 — це запобігає втраті якості на останньому пасі
+- white cleanup працює в режимі `Smart retry`:
+  - перший pass обов'язковий;
+  - другий pass виконується тільки якщо preflight показав residual near-white;
+  - надлишкові повторні проходи не виконуються;
+  - final white cleanup працює на `RASTERIZE_DPI=600` (той самий DPI, що і rasterization).
+  - деталі реалізації і валідація: [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
 - QR і Spotify code рендеруються на 600 DPI-еквіваленті цільового фізичного розміру (не на дефолтному ~100px для QR чи 640px для Spotify API):
   - A5 QR: ~100px → 472px
   - A4 QR: ~100px → 709px
