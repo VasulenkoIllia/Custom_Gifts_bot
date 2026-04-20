@@ -21,6 +21,8 @@
 - [docs/LOCAL_REAL_MODE_TESTING.md](./LOCAL_REAL_MODE_TESTING.md)
 - [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](./WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
   - впровадження `Smart retry` для white cleanup + A/B результати на live-order set.
+- [docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md](./WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md)
+  - CMYK postcheck + одиночні прогони `29660..29654` з контролем near-white і метрик якості.
 
 ## Історичні та планові документи
 Ці файли збережені як історія рішень і міграції; вони не є джерелом актуального runtime-контракту:

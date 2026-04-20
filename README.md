@@ -79,7 +79,11 @@ TypeScript-сервіс для повного циклу обробки замо
   - другий pass виконується тільки якщо preflight показав residual near-white;
   - надлишкові повторні проходи не виконуються;
   - final white cleanup працює на `RASTERIZE_DPI=600` (той самий DPI, що і rasterization).
-  - деталі реалізації і валідація: [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
+  - у `PDF_COLOR_SPACE=CMYK` фінальний файл завжди конвертується в CMYK;
+  - після CMYK конверсії виконується residual near-white postcheck і, за потреби, один додатковий aggressive-pass з повторною CMYK конверсією;
+  - деталі реалізації і валідація:
+    - [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
+    - [docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md)
 - QR і Spotify code рендеруються на 600 DPI-еквіваленті цільового фізичного розміру (не на дефолтному ~100px для QR чи 640px для Spotify API):
   - A5 QR: ~100px → 472px
   - A4 QR: ~100px → 709px

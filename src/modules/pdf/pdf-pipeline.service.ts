@@ -13,7 +13,11 @@ import {
 } from "../qr/spotify-code";
 import type { ShortenUrlResult, UrlShortenerService } from "../url-shortener/shortener-service";
 import type { GeneratePdfMaterialsInput, PdfGeneratedFile, PdfPipelineResult } from "./pdf.types";
-import { generateMaterialFiles, enforceOffWhiteInPdf } from "./material-generator";
+import {
+  generateMaterialFiles,
+  enforceOffWhiteInPdf,
+  measureResidualNearWhiteInPdf,
+} from "./material-generator";
 
 type MaterialGeneratorLayoutMaterial = {
   type: "poster" | "engraving" | "sticker";
@@ -688,6 +692,7 @@ export class PdfPipelineService {
     generatedFiles: PdfPipelineResult["generated"],
   ): Promise<{ filesProcessed: number; correctedPixels: number }> {
     const enforce = this.getEnforceOffWhiteInPdf();
+    const measureResidual = this.getMeasureResidualNearWhiteInPdf();
     if (!enforce) {
       return {
         filesProcessed: 0,
@@ -709,8 +714,14 @@ export class PdfPipelineService {
 
       const initialResidual = this.extractResidualWhiteCounts(finalStageStats);
       const shouldRetry = this.hasResidualWhiteCounts(initialResidual);
+      const wasCmykAppliedAfterOverlay = details?.post_embed_color_space === "CMYK";
       let residualAfterRetry = initialResidual;
       let fileCorrectedPixels = 0;
+      let cmykApplied = false;
+      let cmykPostcheckApplied = false;
+      let cmykRetryTriggered = false;
+      let cmykRetryAttempts = 0;
+      const cmykRetryPaletteUsed: string[] = [];
 
       if (shouldRetry) {
         const stats = await enforce({
@@ -721,21 +732,68 @@ export class PdfPipelineService {
         residualAfterRetry = this.extractResidualWhiteCounts(stats);
         fileCorrectedPixels = this.extractCorrectedPixelCount(stats);
         correctedPixels += fileCorrectedPixels;
+      }
 
-        if (this.colorSpace === "CMYK") {
-          await this.convertPdfToCmykInPlace(generatedFile.path);
+      if (this.colorSpace === "CMYK" && (shouldRetry || !wasCmykAppliedAfterOverlay)) {
+        await this.convertPdfToCmykInPlace(generatedFile.path);
+        cmykApplied = true;
+      }
+
+      if (this.colorSpace === "CMYK" && measureResidual) {
+        cmykPostcheckApplied = true;
+        const measuredResidual = await measureResidual({
+          filePath: generatedFile.path,
+          rasterizeDpi: this.rasterizeDpi,
+        });
+        residualAfterRetry = this.extractResidualWhiteCounts(measuredResidual);
+
+        if (this.hasResidualWhiteCounts(residualAfterRetry)) {
+          const cmykRetryPalette = this.buildCmykRetryOffWhitePalette();
+          for (const retryOffWhiteHex of cmykRetryPalette) {
+            cmykRetryTriggered = true;
+            cmykRetryAttempts += 1;
+            cmykRetryPaletteUsed.push(retryOffWhiteHex);
+
+            const retryStats = await enforce({
+              filePath: generatedFile.path,
+              offWhiteHex: retryOffWhiteHex,
+              rasterizeDpi: this.rasterizeDpi,
+              profile: "aggressive",
+            });
+
+            const retryCorrectedPixels = this.extractCorrectedPixelCount(retryStats);
+            fileCorrectedPixels += retryCorrectedPixels;
+            correctedPixels += retryCorrectedPixels;
+
+            await this.convertPdfToCmykInPlace(generatedFile.path);
+            cmykApplied = true;
+
+            const measuredAfterRetry = await measureResidual({
+              filePath: generatedFile.path,
+              rasterizeDpi: this.rasterizeDpi,
+            });
+            residualAfterRetry = this.extractResidualWhiteCounts(measuredAfterRetry);
+            if (!this.hasResidualWhiteCounts(residualAfterRetry)) {
+              break;
+            }
+          }
         }
       }
 
-      const preflightFailedAfterRetry = shouldRetry && this.hasResidualWhiteCounts(residualAfterRetry);
+      const preflightFailedAfterRetry = this.hasResidualWhiteCounts(residualAfterRetry);
       generatedFile.details = {
         ...generatedFile.details,
         final_preflight: {
-          applied: shouldRetry,
+          applied: shouldRetry || cmykRetryTriggered,
           retry_triggered: shouldRetry,
+          cmyk_postcheck_applied: cmykPostcheckApplied,
+          cmyk_retry_triggered: cmykRetryTriggered,
+          cmyk_retry_attempts: cmykRetryAttempts,
+          cmyk_retry_palette: cmykRetryPaletteUsed,
           preflight_failed_after_retry: preflightFailedAfterRetry,
           corrected_pixels: fileCorrectedPixels,
           color_space: this.colorSpace,
+          cmyk_applied: cmykApplied,
           off_white_hex: this.offWhiteHex,
           residual_strict_white_pixels: residualAfterRetry.strict,
           residual_aggressive_white_pixels: residualAfterRetry.aggressive,
@@ -820,7 +878,36 @@ export class PdfPipelineService {
     }, 0);
   }
 
+  private normalizeHexColor(value: string): string | null {
+    const normalized = String(value ?? "")
+      .trim()
+      .replace(/^#/, "")
+      .toUpperCase();
+    if (!/^[0-9A-F]{6}$/.test(normalized)) {
+      return null;
+    }
+    return normalized;
+  }
+
+  private shiftHexTowardGray(value: string, delta: number): string {
+    const safeDelta = Math.max(0, Math.min(64, Math.floor(delta)));
+    const red = Math.max(0, Number.parseInt(value.slice(0, 2), 16) - safeDelta);
+    const green = Math.max(0, Number.parseInt(value.slice(2, 4), 16) - safeDelta);
+    const blue = Math.max(0, Number.parseInt(value.slice(4, 6), 16) - safeDelta);
+    return [red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("").toUpperCase();
+  }
+
+  private buildCmykRetryOffWhitePalette(): string[] {
+    const base = this.normalizeHexColor(this.offWhiteHex) ?? "FFFEFA";
+    const candidates = [this.shiftHexTowardGray(base, 8), this.shiftHexTowardGray(base, 12)];
+    return [...new Set(candidates)];
+  }
+
   private getEnforceOffWhiteInPdf(): typeof enforceOffWhiteInPdf | null {
     return enforceOffWhiteInPdf;
+  }
+
+  private getMeasureResidualNearWhiteInPdf(): typeof measureResidualNearWhiteInPdf | null {
+    return measureResidualNearWhiteInPdf;
   }
 }

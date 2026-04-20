@@ -177,6 +177,17 @@ type ReplaceWhiteOptions = {
   allowSoftMaskFallback?: boolean;
 };
 
+type MeasureResidualNearWhiteInPdfInput = {
+  filePath: string;
+  rasterizeDpi?: number;
+  minAlpha?: number;
+  lowAlphaThreshold?: number;
+  strictThreshold?: number;
+  strictMaxSaturation?: number;
+  aggressiveThreshold?: number;
+  aggressiveMaxSaturation?: number;
+};
+
 type FontSet = {
   primary: Font;
   fallbacks: Font[];
@@ -331,6 +342,7 @@ export type EnforceOffWhiteInput = {
   filePath: string;
   offWhiteHex?: string;
   rasterizeDpi?: number;
+  profile?: "strict" | "aggressive";
 };
 
 // ---------------------------------------------------------------------------
@@ -3088,6 +3100,31 @@ export async function generateMaterialFiles(
 }
 
 export async function enforceOffWhiteInPdf(input: EnforceOffWhiteInput): Promise<Record<string, unknown>> {
+  const profile = input.profile === "aggressive" ? "aggressive" : "strict";
+
+  if (profile === "aggressive") {
+    return replaceWhiteInPdfWithOffWhiteInPlace({
+      filePath: input.filePath,
+      offWhiteHex: input.offWhiteHex ?? "FFFEFA",
+      threshold: 252,
+      maxSaturation: 0.03,
+      dpi: input.rasterizeDpi ?? 300,
+      stripSoftMask: true,
+      mode: "threshold",
+      minAlpha: 0,
+      cleanupPasses: 1,
+      cleanupMinChannel: 252,
+      cleanupMaxSaturation: 0.08,
+      hardCleanupPasses: 2,
+      hardCleanupMinChannel: 244,
+      hardCleanupMinLightness: 97.5,
+      hardCleanupDeltaEMax: 16,
+      hardCleanupMaxSaturation: 0.4,
+      sanitizeTransparentRgb: true,
+      allowSoftMaskFallback: true,
+    });
+  }
+
   return replaceWhiteInPdfWithOffWhiteInPlace({
     filePath: input.filePath,
     offWhiteHex: input.offWhiteHex ?? "FFFEFA",
@@ -3108,6 +3145,108 @@ export async function enforceOffWhiteInPdf(input: EnforceOffWhiteInput): Promise
     sanitizeTransparentRgb: true,
     allowSoftMaskFallback: true,
   });
+}
+
+export async function measureResidualNearWhiteInPdf(
+  input: MeasureResidualNearWhiteInPdfInput,
+): Promise<Record<string, unknown>> {
+  const {
+    filePath,
+    rasterizeDpi = 300,
+    minAlpha = 0,
+    lowAlphaThreshold = 40,
+    strictThreshold = 254,
+    strictMaxSaturation = 0.25,
+    aggressiveThreshold = 252,
+    aggressiveMaxSaturation = 0.03,
+  } = input;
+
+  await ensureGhostscriptAvailable();
+
+  const safeDpi = Number.isFinite(Number(rasterizeDpi)) ? Math.max(72, Number(rasterizeDpi)) : 300;
+  const safeMinAlpha = Number.isFinite(Number(minAlpha))
+    ? Math.max(0, Math.min(255, Math.floor(Number(minAlpha))))
+    : 0;
+  const safeLowAlphaThreshold = Number.isFinite(Number(lowAlphaThreshold))
+    ? Math.max(0, Math.min(255, Math.floor(Number(lowAlphaThreshold))))
+    : 40;
+  const safeStrictThreshold = Number.isFinite(Number(strictThreshold))
+    ? Math.max(0, Math.min(255, Math.floor(Number(strictThreshold))))
+    : 254;
+  const safeStrictMaxSaturation = Number.isFinite(Number(strictMaxSaturation))
+    ? Math.max(0, Math.min(1, Number(strictMaxSaturation)))
+    : 0.25;
+  const safeAggressiveThreshold = Number.isFinite(Number(aggressiveThreshold))
+    ? Math.max(0, Math.min(255, Math.floor(Number(aggressiveThreshold))))
+    : 252;
+  const safeAggressiveMaxSaturation = Number.isFinite(Number(aggressiveMaxSaturation))
+    ? Math.max(0, Math.min(1, Number(aggressiveMaxSaturation)))
+    : 0.03;
+
+  const tempDir = path.join(
+    path.dirname(filePath),
+    `.tmp-white-residual-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  const pngPattern = path.join(tempDir, "page-%04d.png");
+
+  await fsp.mkdir(tempDir, { recursive: true });
+
+  try {
+    await rasterizePdfToPngs({ filePath, outputPattern: pngPattern, dpi: safeDpi });
+
+    const pngFiles = (await fsp.readdir(tempDir))
+      .filter((fileName) => fileName.toLowerCase().endsWith(".png"))
+      .sort((left, right) => left.localeCompare(right))
+      .map((fileName) => path.join(tempDir, fileName));
+
+    if (pngFiles.length === 0) {
+      throw new Error("Rasterization produced no pages.");
+    }
+
+    let strictWhitePixels = 0;
+    let aggressiveWhitePixels = 0;
+    let strictLowAlphaWhitePixels = 0;
+    let aggressiveLowAlphaWhitePixels = 0;
+
+    for (const pngPath of pngFiles) {
+      const pagePngBuffer = await fsp.readFile(pngPath);
+      const pagePng = PNG.sync.read(pagePngBuffer);
+      const premultiplied = detectPremultipliedAlpha(pagePng);
+      const pageResidual = measureResidualNearWhitePixels({
+        png: pagePng,
+        premultiplied,
+        minAlpha: safeMinAlpha,
+        lowAlphaThreshold: safeLowAlphaThreshold,
+        strictThreshold: safeStrictThreshold,
+        strictMaxSaturation: safeStrictMaxSaturation,
+        aggressiveThreshold: safeAggressiveThreshold,
+        aggressiveMaxSaturation: safeAggressiveMaxSaturation,
+      });
+
+      strictWhitePixels += pageResidual.strictWhitePixels;
+      aggressiveWhitePixels += pageResidual.aggressiveWhitePixels;
+      strictLowAlphaWhitePixels += pageResidual.strictLowAlphaWhitePixels;
+      aggressiveLowAlphaWhitePixels += pageResidual.aggressiveLowAlphaWhitePixels;
+    }
+
+    return {
+      applied: true,
+      pages: pngFiles.length,
+      dpi: safeDpi,
+      min_alpha: safeMinAlpha,
+      low_alpha_threshold: safeLowAlphaThreshold,
+      strict_threshold: safeStrictThreshold,
+      strict_max_saturation: safeStrictMaxSaturation,
+      aggressive_threshold: safeAggressiveThreshold,
+      aggressive_max_saturation: safeAggressiveMaxSaturation,
+      residual_strict_white_pixels: strictWhitePixels,
+      residual_aggressive_white_pixels: aggressiveWhitePixels,
+      residual_strict_low_alpha_white_pixels: strictLowAlphaWhitePixels,
+      residual_aggressive_low_alpha_white_pixels: aggressiveLowAlphaWhitePixels,
+    };
+  } finally {
+    await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 export const __materialGeneratorTestUtils = {
