@@ -9,6 +9,7 @@ import {
 import type { LayoutPlanBuilder } from "../modules/layout/layout-plan-builder";
 import type { LayoutPlan } from "../modules/layout/layout.types";
 import { resolveCaptionQrUrl, type PdfPipelineService } from "../modules/pdf/pdf-pipeline.service";
+import type { PdfPipelineResult } from "../modules/pdf/pdf.types";
 import type { OrderIntakeJobPayload } from "../modules/queue/queue-jobs";
 import type { QueueHandler } from "../modules/queue/queue.types";
 import type { TelegramDeliveryService } from "../modules/telegram/telegram-delivery.service";
@@ -261,6 +262,63 @@ function buildPreviewDetails(layoutPlan: LayoutPlan, orderProducts: KeycrmOrderP
   };
 }
 
+function readNonNegativeInt(value: unknown): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 0;
+  }
+  return parsed;
+}
+
+function buildPipelineMetricsForTelegram(pdfResult: PdfPipelineResult): {
+  pipelineProfile: "standard" | "quality_safe";
+  pipelineReason: string | null;
+  finalWhiteStrictPixels: number;
+  finalWhiteAggressivePixels: number;
+} {
+  const profile =
+    String(pdfResult.pipeline_profile ?? "").trim().toLowerCase() === "quality_safe"
+      ? "quality_safe"
+      : "standard";
+  const reason = String(pdfResult.pipeline_profile_reason ?? "").trim() || null;
+
+  let strictPixels = 0;
+  let aggressivePixels = 0;
+
+  for (const generatedFile of pdfResult.generated) {
+    const details =
+      generatedFile.details && typeof generatedFile.details === "object"
+        ? (generatedFile.details as Record<string, unknown>)
+        : null;
+    if (!details) {
+      continue;
+    }
+
+    const finalPreflight =
+      details.final_preflight && typeof details.final_preflight === "object"
+        ? (details.final_preflight as Record<string, unknown>)
+        : null;
+    const fallbackFinal =
+      details.white_recolor_final && typeof details.white_recolor_final === "object"
+        ? (details.white_recolor_final as Record<string, unknown>)
+        : null;
+    const source = finalPreflight ?? fallbackFinal;
+    if (!source) {
+      continue;
+    }
+
+    strictPixels += readNonNegativeInt(source.residual_strict_white_pixels);
+    aggressivePixels += readNonNegativeInt(source.residual_aggressive_white_pixels);
+  }
+
+  return {
+    pipelineProfile: profile,
+    pipelineReason: reason,
+    finalWhiteStrictPixels: strictPixels,
+    finalWhiteAggressivePixels: aggressivePixels,
+  };
+}
+
 export function createOrderIntakeWorker({
   crmClient,
   layoutPlanBuilder,
@@ -466,6 +524,7 @@ export function createOrderIntakeWorker({
       layoutPlan,
       generatedFiles: pdfResult.generated,
     });
+    const pipelineMetrics = buildPipelineMetricsForTelegram(pdfResult);
 
     let telegramResult;
     try {
@@ -476,6 +535,7 @@ export function createOrderIntakeWorker({
         qrUrl: captionQrUrl,
         previewImages: layoutPlan.previewImages,
         previewDetails,
+        pipelineMetrics,
         generatedFiles: pdfResult.generated,
       });
     } catch (error) {

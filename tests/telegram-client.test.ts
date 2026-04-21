@@ -47,6 +47,25 @@ test("buildCaption highlights manual A6 and keychain flags", () => {
   assert.match(caption, /\n📌 QR \+\n📌 A6 \+\n📌 B \+/);
 });
 
+test("buildCaption includes pipeline profile and final white metrics when provided", () => {
+  const caption = buildCaption({
+    orderId: "558",
+    fileNames: ["CGU_AA5_558_1_1.pdf"],
+    flags: [],
+    warnings: [],
+    qrUrl: null,
+    pipelineMetrics: {
+      pipelineProfile: "quality_safe",
+      pipelineReason: "auto_risk",
+      finalWhiteStrictPixels: 0,
+      finalWhiteAggressivePixels: 0,
+    },
+  });
+
+  assert.match(caption, /\nПайплайн: QUALITY_SAFE \(auto_risk\)/);
+  assert.match(caption, /\nБілий фінал \(px\): strict=0 \| aggressive=0/);
+});
+
 test("buildPreviewCaption includes engraving and sticker text when present", () => {
   const caption = buildPreviewCaption({
     orderId: "29068",

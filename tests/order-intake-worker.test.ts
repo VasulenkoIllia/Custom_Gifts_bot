@@ -550,6 +550,122 @@ test("order worker hides QR url in caption payload when QR was not embedded", as
   assert.equal(receivedQrUrl, "null");
 });
 
+test("order worker forwards pipeline and final white metrics into telegram payload", async () => {
+  let receivedPipelineMetrics:
+    | {
+        pipelineProfile: string;
+        pipelineReason?: string | null;
+        finalWhiteStrictPixels: number;
+        finalWhiteAggressivePixels: number;
+      }
+    | null = null;
+
+  const worker = createOrderIntakeWorker({
+    logger: logger(),
+    materialsStatusId: 20,
+    missingFileStatusId: 40,
+    opsAlertService: opsAlertService(),
+    crmClient: {
+      getOrder: async () => ({ id: 123, status_id: 20, products: [] }),
+      updateOrderStatus: async () => ({ id: 123, status_id: 20, products: [] }),
+    },
+    layoutPlanBuilder: {
+      build: () => ({
+        orderNumber: "123",
+        urgent: false,
+        flags: [],
+        notes: [],
+        previewImages: [],
+        qr: {
+          requested: false,
+          valid: false,
+          shouldGenerate: false,
+          originalUrl: null,
+          url: null,
+        },
+        materials: [
+          {
+            type: "poster",
+            code: "AA5",
+            index: 1,
+            total: 1,
+            filename: "CGU_AA5_123_1_1",
+            productId: 10,
+            sku: "PosterGiftA5WW",
+            sourceUrl: "https://example.com/poster.pdf",
+            text: null,
+            format: "A5",
+            standType: null,
+          },
+        ],
+      }),
+    } as never,
+    pdfPipelineService: {
+      generateForOrder: async () => ({
+        output_dir: "/tmp",
+        color_space: "CMYK" as const,
+        warnings: [],
+        pipeline_profile: "quality_safe" as const,
+        pipeline_profile_reason: "auto_risk",
+        generated: [
+          {
+            type: "poster",
+            filename: "CGU_AA5_123_1_1.pdf",
+            path: "/tmp/CGU_AA5_123_1_1.pdf",
+            details: {
+              final_preflight: {
+                residual_strict_white_pixels: 0,
+                residual_aggressive_white_pixels: 0,
+              },
+            },
+          },
+        ],
+        failed: [],
+      }),
+    } as never,
+    telegramDeliveryService: {
+      sendOrderMaterials: async (input: {
+        pipelineMetrics?: {
+          pipelineProfile: string;
+          pipelineReason?: string | null;
+          finalWhiteStrictPixels: number;
+          finalWhiteAggressivePixels: number;
+        } | null;
+      }) => {
+        receivedPipelineMetrics = input.pipelineMetrics ?? null;
+        return {
+          chatId: "-100",
+          messageIds: [101],
+          previewMessageIds: [],
+          caption: "ok",
+        };
+      },
+    } as never,
+    telegramMessageMapStore: {
+      linkMessages: async () => ({ linked: 1 }),
+    } as never,
+  });
+
+  await worker({
+    id: "j8-metrics",
+    key: "k8-metrics",
+    status: "queued",
+    attempt: 1,
+    maxAttempts: 3,
+    createdAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+    payload: baseJobPayload(),
+  });
+
+  assert.deepEqual(receivedPipelineMetrics, {
+    pipelineProfile: "quality_safe",
+    pipelineReason: "auto_risk",
+    finalWhiteStrictPixels: 0,
+    finalWhiteAggressivePixels: 0,
+  });
+});
+
 test("order worker moves order to missing file and alerts ops when poster source is missing", async () => {
   let pdfCalled = false;
   let telegramCalled = false;

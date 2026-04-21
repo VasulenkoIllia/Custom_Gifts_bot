@@ -177,6 +177,28 @@
 Валідація цієї зміни на live-order set зафіксована тут:
 - [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
 - [docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md)
+- [docs/WHITE_QUALITY_SAFE_INTEGRATION_2026-04-21.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_QUALITY_SAFE_INTEGRATION_2026-04-21.md)
+
+Опційно доступний quality-safe профіль:
+- `PDF_WHITE_QUALITY_SAFE_PROFILE=true`
+- strict one-pass (`threshold`), без final white pass;
+- використовує `RASTERIZE_DPI` як DPI проходу;
+- підходить для макетів з чутливими тонкими лініями/soft-mask.
+
+Auto-router для вибору профілю по ризику:
+- `PDF_PROFILE_AUTO_ROUTER=true`
+- `PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI=300` (default)
+- `PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS=150000` (default)
+- `PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD=2` (default)
+- якщо ризиковий score досягає порогу, order іде через `quality-safe`, інакше через `standard`.
+
+У Telegram caption додаються технічні метрики:
+- `Пайплайн: STANDARD|QUALITY_SAFE (+ reason)`
+- `Білий фінал (px): strict=<N> | aggressive=<N>`
+
+Для CMYK артефактів на тонких краях доступний lossless режим:
+- `PDF_CMYK_LOSSLESS=true`
+- CMYK конверсія робиться з `FlateEncode` (color/gray) без downsample.
 
 ## 5.5 PDF Quality: DPI optimization (final white cleanup & QR/Spotify rendering)
 Pipeline тепер забезпечує максимальну якість на всіх етапах за допомогою правильної DPI-конверсії:

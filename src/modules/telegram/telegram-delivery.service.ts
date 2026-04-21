@@ -4,6 +4,7 @@ import type { TelegramDeliveryRecord } from "./db-telegram-delivery-store";
 import {
   sendOrderFilesToTelegram,
   type PreviewCaptionDetails,
+  type PipelineCaptionMetrics,
 } from "./telegram-client";
 
 type TelegramRequestOptions = {
@@ -19,6 +20,7 @@ type TelegramDeliveryInput = {
   qrUrl: string | null;
   previewImages: string[];
   previewDetails?: PreviewCaptionDetails | null;
+  pipelineMetrics?: PipelineCaptionMetrics | null;
   generatedFiles: PdfGeneratedFile[];
 };
 
@@ -110,6 +112,7 @@ export class TelegramDeliveryService {
       warnings: input.warnings,
       qrUrl: input.qrUrl,
       previewImages: input.previewImages,
+      pipelineMetrics: input.pipelineMetrics ?? null,
       generatedFiles: input.generatedFiles,
     });
     if (this.deliveryStore) {
@@ -151,6 +154,7 @@ export class TelegramDeliveryService {
         qrUrl: input.qrUrl,
         previewImages: Array.isArray(input.previewImages) ? input.previewImages : [],
         previewDetails: input.previewDetails ?? null,
+        pipelineMetrics: input.pipelineMetrics ?? null,
         generatedFiles: input.generatedFiles.map((item) => ({
           path: item.path,
           filename: item.filename,
@@ -213,6 +217,7 @@ function buildDeliveryKey(input: {
   qrUrl: string | null;
   previewImages: string[];
   previewDetails?: PreviewCaptionDetails | null;
+  pipelineMetrics?: PipelineCaptionMetrics | null;
   generatedFiles: PdfGeneratedFile[];
 }): string {
   const signature = JSON.stringify({
@@ -241,6 +246,16 @@ function buildDeliveryKey(input: {
         .filter(Boolean)
         .sort(),
     },
+    pipelineMetrics: input.pipelineMetrics
+      ? {
+          pipelineProfile: String(input.pipelineMetrics.pipelineProfile ?? "").trim(),
+          pipelineReason: String(input.pipelineMetrics.pipelineReason ?? "").trim(),
+          finalWhiteStrictPixels: Number(input.pipelineMetrics.finalWhiteStrictPixels ?? 0),
+          finalWhiteAggressivePixels: Number(
+            input.pipelineMetrics.finalWhiteAggressivePixels ?? 0,
+          ),
+        }
+      : null,
     generatedFiles: (input.generatedFiles ?? [])
       .map((item) => ({
         type: item.type,

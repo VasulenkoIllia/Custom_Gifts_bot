@@ -82,6 +82,12 @@ export type AppConfig = {
   pdfStickerSizeMm: number;
   pdfOffWhiteHex: string;
   pdfRasterizeDpi: number;
+  pdfWhiteQualitySafeProfile?: boolean;
+  pdfCmykLossless?: boolean;
+  pdfProfileAutoRouter?: boolean;
+  pdfProfileAutoRouterPreflightDpi?: number;
+  pdfProfileAutoRouterRiskThreshold?: number;
+  pdfProfileAutoRouterAggressiveWhitePixels?: number;
   qrA5RightMm: number;
   qrA5BottomMm: number;
   qrA5SizeMm: number;

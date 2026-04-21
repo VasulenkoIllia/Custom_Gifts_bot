@@ -207,6 +207,21 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       .replace(/^#/, "")
       .toUpperCase(),
     pdfRasterizeDpi: parsePositiveInteger(env.RASTERIZE_DPI, 600),
+    pdfWhiteQualitySafeProfile: parseBoolean(env.PDF_WHITE_QUALITY_SAFE_PROFILE, false),
+    pdfCmykLossless: parseBoolean(env.PDF_CMYK_LOSSLESS, false),
+    pdfProfileAutoRouter: parseBoolean(env.PDF_PROFILE_AUTO_ROUTER, false),
+    pdfProfileAutoRouterPreflightDpi: parsePositiveInteger(
+      env.PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI,
+      300,
+    ),
+    pdfProfileAutoRouterRiskThreshold: parsePositiveInteger(
+      env.PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD,
+      2,
+    ),
+    pdfProfileAutoRouterAggressiveWhitePixels: parsePositiveInteger(
+      env.PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS,
+      150_000,
+    ),
     qrA5RightMm: parsePositiveFloat(env.QR_A5_RIGHT_MM, 10),
     qrA5BottomMm: parsePositiveFloat(env.QR_A5_BOTTOM_MM, 10),
     qrA5SizeMm: parsePositiveFloat(env.QR_A5_SIZE_MM, 20),

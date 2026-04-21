@@ -290,6 +290,37 @@ export function validateConfig(config: AppConfig): void {
     throw new Error("RASTERIZE_DPI is invalid.");
   }
 
+  if (
+    config.pdfProfileAutoRouter !== undefined &&
+    typeof config.pdfProfileAutoRouter !== "boolean"
+  ) {
+    throw new Error("PDF_PROFILE_AUTO_ROUTER is invalid.");
+  }
+
+  if (
+    config.pdfProfileAutoRouterPreflightDpi !== undefined &&
+    (!Number.isFinite(config.pdfProfileAutoRouterPreflightDpi) ||
+      config.pdfProfileAutoRouterPreflightDpi <= 0)
+  ) {
+    throw new Error("PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI is invalid.");
+  }
+
+  if (
+    config.pdfProfileAutoRouterRiskThreshold !== undefined &&
+    (!Number.isFinite(config.pdfProfileAutoRouterRiskThreshold) ||
+      config.pdfProfileAutoRouterRiskThreshold <= 0)
+  ) {
+    throw new Error("PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD is invalid.");
+  }
+
+  if (
+    config.pdfProfileAutoRouterAggressiveWhitePixels !== undefined &&
+    (!Number.isFinite(config.pdfProfileAutoRouterAggressiveWhitePixels) ||
+      config.pdfProfileAutoRouterAggressiveWhitePixels <= 0)
+  ) {
+    throw new Error("PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS is invalid.");
+  }
+
   if (!Number.isFinite(config.qrA5RightMm) || config.qrA5RightMm <= 0) {
     throw new Error("QR_A5_RIGHT_MM is invalid.");
   }

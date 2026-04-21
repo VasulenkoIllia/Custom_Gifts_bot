@@ -336,6 +336,7 @@ export type GenerateMaterialFilesInput = {
   whiteFinalThreshold?: number;
   whiteFinalMaxSaturation?: number;
   whiteFinalDpi?: number;
+  cmykLossless?: boolean;
 };
 
 export type EnforceOffWhiteInput = {
@@ -519,10 +520,20 @@ async function ensureGhostscriptAvailable(): Promise<string> {
   return ghostscriptVersionPromise;
 }
 
-async function convertPdfToCmykInPlace(filePath: string): Promise<void> {
+async function convertPdfToCmykInPlace(filePath: string, lossless = false): Promise<void> {
   const tempFilePath = `${filePath}.cmyk.tmp.pdf`;
 
   try {
+    const losslessArgs = lossless
+      ? [
+          "-dAutoFilterColorImages=false",
+          "-dAutoFilterGrayImages=false",
+          "-dColorImageFilter=/FlateEncode",
+          "-dGrayImageFilter=/FlateEncode",
+          "-dDownsampleColorImages=false",
+          "-dDownsampleGrayImages=false",
+        ]
+      : [];
     await runCommand("gs", [
       "-q",
       "-dSAFER",
@@ -534,6 +545,7 @@ async function convertPdfToCmykInPlace(filePath: string): Promise<void> {
       "-dColorConversionStrategy=/CMYK",
       "-dColorConversionStrategyForImages=/CMYK",
       "-dAutoRotatePages=/None",
+      ...losslessArgs,
       `-sOutputFile=${tempFilePath}`,
       filePath,
     ]);
@@ -2717,6 +2729,7 @@ export async function generateMaterialFiles(
     whiteFinalThreshold = 254,
     whiteFinalMaxSaturation = 0.25,
     whiteFinalDpi = 300,
+    cmykLossless = false,
   } = input;
 
   const resolvedOutputRoot = path.resolve(outputRoot);
@@ -3067,7 +3080,7 @@ export async function generateMaterialFiles(
       }
 
       if (normalizedColorSpace === "CMYK") {
-        await convertPdfToCmykInPlace(filePath);
+        await convertPdfToCmykInPlace(filePath, Boolean(cmykLossless));
       }
 
       if (replaceWhiteWithOffWhite) {

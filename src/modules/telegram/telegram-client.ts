@@ -46,6 +46,14 @@ type BuildCaptionParams = {
   flags: string[];
   warnings: string[];
   qrUrl: string | null;
+  pipelineMetrics?: PipelineCaptionMetrics | null;
+};
+
+export type PipelineCaptionMetrics = {
+  pipelineProfile: "standard" | "quality_safe" | string;
+  pipelineReason?: string | null;
+  finalWhiteStrictPixels: number;
+  finalWhiteAggressivePixels: number;
 };
 
 export type PreviewCaptionDetails = {
@@ -64,6 +72,7 @@ export type SendOrderFilesInput = {
   qrUrl: string | null;
   previewImages: string[];
   previewDetails?: PreviewCaptionDetails | null;
+  pipelineMetrics?: PipelineCaptionMetrics | null;
   generatedFiles: TelegramFile[];
   requestOptions?: RequestOptions;
 };
@@ -247,6 +256,7 @@ export function buildCaption({
   flags,
   warnings,
   qrUrl,
+  pipelineMetrics,
 }: BuildCaptionParams): string {
   const normalizedWarnings = Array.isArray(warnings)
     ? warnings.map((item) => String(item ?? "").trim()).filter(Boolean)
@@ -265,6 +275,27 @@ export function buildCaption({
   lines.push("", "Файли:");
   for (const fileName of fileNames) {
     lines.push(fileName);
+  }
+
+  if (pipelineMetrics) {
+    const normalizedProfile = String(pipelineMetrics.pipelineProfile ?? "standard")
+      .trim()
+      .toUpperCase();
+    const normalizedReason = String(pipelineMetrics.pipelineReason ?? "").trim();
+    const strictPixels = Math.max(
+      0,
+      Math.floor(Number(pipelineMetrics.finalWhiteStrictPixels ?? 0) || 0),
+    );
+    const aggressivePixels = Math.max(
+      0,
+      Math.floor(Number(pipelineMetrics.finalWhiteAggressivePixels ?? 0) || 0),
+    );
+
+    lines.push(
+      "",
+      `Пайплайн: ${normalizedProfile}${normalizedReason ? ` (${normalizedReason})` : ""}`,
+      `Білий фінал (px): strict=${strictPixels} | aggressive=${aggressivePixels}`,
+    );
   }
 
   if (qrUrl) {
@@ -789,6 +820,7 @@ export async function sendOrderFilesToTelegram({
   qrUrl,
   previewImages,
   previewDetails,
+  pipelineMetrics,
   generatedFiles,
   requestOptions = {},
 }: SendOrderFilesInput): Promise<SendOrderFilesResult> {
@@ -815,6 +847,7 @@ export async function sendOrderFilesToTelegram({
     flags,
     warnings: [...(Array.isArray(warnings) ? warnings : []), ...previewWarnings],
     qrUrl,
+    pipelineMetrics: pipelineMetrics ?? null,
   });
 
   const sentMessages = await sendGeneratedFiles({

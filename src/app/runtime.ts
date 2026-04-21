@@ -259,6 +259,12 @@ async function createRuntimeServices(params: {
     stickerSizeMm: config.pdfStickerSizeMm,
     offWhiteHex: config.pdfOffWhiteHex,
     rasterizeDpi: config.pdfRasterizeDpi,
+    qualitySafeProfile: Boolean(config.pdfWhiteQualitySafeProfile),
+    cmykLossless: Boolean(config.pdfCmykLossless),
+    autoRouterEnabled: Boolean(config.pdfProfileAutoRouter),
+    autoRouterPreflightDpi: config.pdfProfileAutoRouterPreflightDpi,
+    autoRouterRiskThreshold: config.pdfProfileAutoRouterRiskThreshold,
+    autoRouterAggressiveWhitePixels: config.pdfProfileAutoRouterAggressiveWhitePixels,
     spotifyRequestOptions: {
       timeoutMs: config.spotifyRequestTimeoutMs,
       retries: config.spotifyRequestRetries,

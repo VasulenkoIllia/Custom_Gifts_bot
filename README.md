@@ -84,6 +84,20 @@ TypeScript-сервіс для повного циклу обробки замо
   - деталі реалізації і валідація:
     - [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
     - [docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md)
+    - [docs/WHITE_QUALITY_SAFE_INTEGRATION_2026-04-21.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_QUALITY_SAFE_INTEGRATION_2026-04-21.md)
+- додатково доступний `quality-safe` режим (для макетів на кшталт 29658):
+  - вмикається через `PDF_WHITE_QUALITY_SAFE_PROFILE=true`;
+  - використовує strict white-pass (`threshold`), без final white pass;
+  - вмикає один pass у `RASTERIZE_DPI` і зберігає `white=0`;
+  - для мінімізації артефактів CMYK-конверсії можна вмикати `PDF_CMYK_LOSSLESS=true` (Flate для color/gray image, без downsample);
+  - рекомендований набір для профілю H6: `OFFWHITE_HEX=FCFBF7`, `RASTERIZE_DPI=1200`, `PDF_COLOR_SPACE=CMYK`, `PDF_WHITE_QUALITY_SAFE_PROFILE=true`, `PDF_CMYK_LOSSLESS=true`.
+- для автоматичного вибору профілю доступний auto-router:
+  - `PDF_PROFILE_AUTO_ROUTER=true`;
+  - preflight source PDF робиться в `PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI` (default `300`);
+  - якщо ризик (residual aggressive near-white) >= `PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS` і score >= `PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD`, замовлення йде через `QUALITY_SAFE`, інакше через `STANDARD`.
+- у Telegram caption додано 2 технічні метрики:
+  - який профіль застосовано (`STANDARD` / `QUALITY_SAFE`);
+  - фінальні white-пікселі після preflight (`strict`, `aggressive`).
 - QR і Spotify code рендеруються на 600 DPI-еквіваленті цільового фізичного розміру (не на дефолтному ~100px для QR чи 640px для Spotify API):
   - A5 QR: ~100px → 472px
   - A4 QR: ~100px → 709px
