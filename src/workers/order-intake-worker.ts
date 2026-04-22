@@ -270,11 +270,15 @@ function readNonNegativeInt(value: unknown): number {
   return parsed;
 }
 
-function buildPipelineMetricsForTelegram(pdfResult: PdfPipelineResult): {
+function buildPipelineMetricsForTelegram(
+  pdfResult: PdfPipelineResult,
+  orderProcessingDurationMs: number,
+): {
   pipelineProfile: "standard" | "quality_safe";
   pipelineReason: string | null;
   finalWhiteStrictPixels: number;
   finalWhiteAggressivePixels: number;
+  orderProcessingDurationMs: number;
 } {
   const profile =
     String(pdfResult.pipeline_profile ?? "").trim().toLowerCase() === "quality_safe"
@@ -316,6 +320,7 @@ function buildPipelineMetricsForTelegram(pdfResult: PdfPipelineResult): {
     pipelineReason: reason,
     finalWhiteStrictPixels: strictPixels,
     finalWhiteAggressivePixels: aggressivePixels,
+    orderProcessingDurationMs: Math.max(0, Math.floor(orderProcessingDurationMs)),
   };
 }
 
@@ -425,6 +430,7 @@ export function createOrderIntakeWorker({
       return;
     }
 
+    const orderProcessingStartedAt = Date.now();
     const layoutPlan = layoutPlanBuilder.build(order);
     const productCount = Array.isArray(order.products) ? order.products.length : 0;
     const orderId = String(order.id);
@@ -511,6 +517,7 @@ export function createOrderIntakeWorker({
       generated: pdfResult.generated.length,
       warnings: pdfResult.warnings,
       outputDir: pdfResult.output_dir,
+      orderProcessingDurationMs: Date.now() - orderProcessingStartedAt,
     });
 
     const telegramWarnings = Array.from(
@@ -524,7 +531,10 @@ export function createOrderIntakeWorker({
       layoutPlan,
       generatedFiles: pdfResult.generated,
     });
-    const pipelineMetrics = buildPipelineMetricsForTelegram(pdfResult);
+    const pipelineMetrics = buildPipelineMetricsForTelegram(
+      pdfResult,
+      Date.now() - orderProcessingStartedAt,
+    );
 
     let telegramResult;
     try {
@@ -581,6 +591,7 @@ export function createOrderIntakeWorker({
       messageIds: telegramResult.messageIds,
       linkedMessages: linked.linked,
       warnings: telegramResult.warnings ?? [],
+      orderProcessingDurationMs: Date.now() - orderProcessingStartedAt,
       jobId: job.id,
     });
 

@@ -170,9 +170,14 @@
 
 Для `PDF_COLOR_SPACE=CMYK` додатково діє пост-CMYK контроль:
 - фінальний файл обов'язково конвертується в CMYK;
+- фінальна CMYK-конверсія виконується після `white_recolor_final` (останній white-pass не може залишити файл у `DeviceRGB`);
 - після CMYK конверсії запускається residual near-white postcheck;
 - якщо postcheck не пройдено, виконується auto-retry з aggressive профілем (`profile=aggressive`) і повторна CMYK конверсія;
 - палітра auto-retry для `OFFWHITE_HEX=FFFEFA`: `F7F6F2`, `F3F2EE` (використовується послідовно).
+
+Швидка технічна перевірка color space фінального PDF:
+- очікується наявність `/DeviceCMYK` у фінальному файлі;
+- не очікується `/DeviceRGB` у постері після pipeline.
 
 Валідація цієї зміни на live-order set зафіксована тут:
 - [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
@@ -195,6 +200,7 @@ Auto-router для вибору профілю по ризику:
 У Telegram caption додаються технічні метрики:
 - `Пайплайн: STANDARD|QUALITY_SAFE (+ reason)`
 - `Білий фінал (px): strict=<N> | aggressive=<N>`
+- `Час опрацювання: <Nс | Mхв Sс | Hг Mхв Sс>`
 
 Для CMYK артефактів на тонких краях доступний lossless режим:
 - `PDF_CMYK_LOSSLESS=true`

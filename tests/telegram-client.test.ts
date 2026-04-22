@@ -59,11 +59,13 @@ test("buildCaption includes pipeline profile and final white metrics when provid
       pipelineReason: "auto_risk",
       finalWhiteStrictPixels: 0,
       finalWhiteAggressivePixels: 0,
+      orderProcessingDurationMs: 125000,
     },
   });
 
   assert.match(caption, /\nПайплайн: QUALITY_SAFE \(auto_risk\)/);
   assert.match(caption, /\nБілий фінал \(px\): strict=0 \| aggressive=0/);
+  assert.match(caption, /\nЧас опрацювання: 2хв 5с/);
 });
 
 test("buildPreviewCaption includes engraving and sticker text when present", () => {

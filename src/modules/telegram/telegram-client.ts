@@ -54,6 +54,7 @@ export type PipelineCaptionMetrics = {
   pipelineReason?: string | null;
   finalWhiteStrictPixels: number;
   finalWhiteAggressivePixels: number;
+  orderProcessingDurationMs?: number | null;
 };
 
 export type PreviewCaptionDetails = {
@@ -246,6 +247,21 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
+function formatDurationCompact(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}г ${minutes}хв ${seconds}с`;
+  }
+  if (minutes > 0) {
+    return `${minutes}хв ${seconds}с`;
+  }
+  return `${seconds}с`;
+}
+
 // ---------------------------------------------------------------------------
 // Core caption builder
 // ---------------------------------------------------------------------------
@@ -296,6 +312,11 @@ export function buildCaption({
       `Пайплайн: ${normalizedProfile}${normalizedReason ? ` (${normalizedReason})` : ""}`,
       `Білий фінал (px): strict=${strictPixels} | aggressive=${aggressivePixels}`,
     );
+
+    const processingDurationMs = Number(pipelineMetrics.orderProcessingDurationMs);
+    if (Number.isFinite(processingDurationMs) && processingDurationMs >= 0) {
+      lines.push(`Час опрацювання: ${formatDurationCompact(processingDurationMs)}`);
+    }
   }
 
   if (qrUrl) {

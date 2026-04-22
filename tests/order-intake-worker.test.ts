@@ -557,6 +557,7 @@ test("order worker forwards pipeline and final white metrics into telegram paylo
         pipelineReason?: string | null;
         finalWhiteStrictPixels: number;
         finalWhiteAggressivePixels: number;
+        orderProcessingDurationMs: number;
       }
     | null = null;
 
@@ -630,6 +631,7 @@ test("order worker forwards pipeline and final white metrics into telegram paylo
           pipelineReason?: string | null;
           finalWhiteStrictPixels: number;
           finalWhiteAggressivePixels: number;
+          orderProcessingDurationMs: number;
         } | null;
       }) => {
         receivedPipelineMetrics = input.pipelineMetrics ?? null;
@@ -658,12 +660,20 @@ test("order worker forwards pipeline and final white metrics into telegram paylo
     payload: baseJobPayload(),
   });
 
-  assert.deepEqual(receivedPipelineMetrics, {
-    pipelineProfile: "quality_safe",
-    pipelineReason: "auto_risk",
-    finalWhiteStrictPixels: 0,
-    finalWhiteAggressivePixels: 0,
-  });
+  const metrics = receivedPipelineMetrics as {
+    pipelineProfile: string;
+    pipelineReason?: string | null;
+    finalWhiteStrictPixels: number;
+    finalWhiteAggressivePixels: number;
+    orderProcessingDurationMs: number;
+  } | null;
+  assert.ok(metrics);
+  assert.equal(metrics.pipelineProfile, "quality_safe");
+  assert.equal(metrics.pipelineReason, "auto_risk");
+  assert.equal(metrics.finalWhiteStrictPixels, 0);
+  assert.equal(metrics.finalWhiteAggressivePixels, 0);
+  assert.ok(Number.isFinite(metrics.orderProcessingDurationMs));
+  assert.ok(metrics.orderProcessingDurationMs >= 0);
 });
 
 test("order worker moves order to missing file and alerts ops when poster source is missing", async () => {

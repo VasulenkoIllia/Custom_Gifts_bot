@@ -13,6 +13,20 @@
   - Ghostscript PDF write з `FlateEncode` для color/gray image, без downsample.
 - Прибрано зайву повторну CMYK конверсію у final preflight, якщо файл вже позначений як CMYK (`details.color_space === "CMYK"`).
 
+## Update 2026-04-22: CMYK final-order fix
+
+Після релізу виявлено регресію: у частині кейсів фінальний PDF мав `DeviceRGB`.
+Root cause: CMYK конверсія виконувалась до `white_recolor_final`, а фінальний white-pass перебудовував PDF через PNG і повертав RGB colorspace.
+
+Виправлення:
+- у `material-generator` перенесено CMYK конверсію після `white_recolor_final`;
+- порядок став детермінованим: `white_recolor_final -> convertPdfToCmykInPlace`;
+- бізнес-логіка (QR/Spotify/layout/CRM/Telegram) не змінювалась.
+
+Практична перевірка після фіксу:
+- фінальний файл має `/DeviceCMYK`;
+- `DeviceRGB` у фінальному постері не очікується.
+
 ## Нові ENV
 
 - `PDF_WHITE_QUALITY_SAFE_PROFILE` (`true|false`, default `false`)
@@ -40,6 +54,7 @@
 У caption файлів додається:
 - `Пайплайн: STANDARD|QUALITY_SAFE (reason)`
 - `Білий фінал (px): strict=<N> | aggressive=<N>`
+- `Час опрацювання: <Nс | Mхв Sс | Hг Mхв Sс>`
 
 ## Рекомендований production-профіль (для макетів типу 29658)
 

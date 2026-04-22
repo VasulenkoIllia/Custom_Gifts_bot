@@ -80,6 +80,7 @@ TypeScript-сервіс для повного циклу обробки замо
   - надлишкові повторні проходи не виконуються;
   - final white cleanup працює на `RASTERIZE_DPI=600` (той самий DPI, що і rasterization).
   - у `PDF_COLOR_SPACE=CMYK` фінальний файл завжди конвертується в CMYK;
+  - порядок кроків зафіксовано як `final white cleanup -> CMYK conversion`, щоб останній white-pass не повертав PDF у `RGB`;
   - після CMYK конверсії виконується residual near-white postcheck і, за потреби, один додатковий aggressive-pass з повторною CMYK конверсією;
   - деталі реалізації і валідація:
     - [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
@@ -95,9 +96,10 @@ TypeScript-сервіс для повного циклу обробки замо
   - `PDF_PROFILE_AUTO_ROUTER=true`;
   - preflight source PDF робиться в `PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI` (default `300`);
   - якщо ризик (residual aggressive near-white) >= `PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS` і score >= `PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD`, замовлення йде через `QUALITY_SAFE`, інакше через `STANDARD`.
-- у Telegram caption додано 2 технічні метрики:
+- у Telegram caption додано 3 технічні метрики:
   - який профіль застосовано (`STANDARD` / `QUALITY_SAFE`);
   - фінальні white-пікселі після preflight (`strict`, `aggressive`).
+  - час опрацювання одного замовлення (`Час опрацювання: <...>`).
 - QR і Spotify code рендеруються на 600 DPI-еквіваленті цільового фізичного розміру (не на дефолтному ~100px для QR чи 640px для Spotify API):
   - A5 QR: ~100px → 472px
   - A4 QR: ~100px → 709px
