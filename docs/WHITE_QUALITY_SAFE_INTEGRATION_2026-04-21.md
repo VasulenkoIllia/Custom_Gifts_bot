@@ -29,12 +29,18 @@ Root cause: CMYK конверсія виконувалась до `white_recolor
 
 ## Нові ENV
 
+- `RASTERIZE_DPI` (default `800`)
+- `RASTERIZE_DPI_STANDARD` (default = `RASTERIZE_DPI`)
+- `RASTERIZE_DPI_QUALITY_SAFE` (default = `RASTERIZE_DPI`)
 - `PDF_WHITE_QUALITY_SAFE_PROFILE` (`true|false`, default `false`)
 - `PDF_CMYK_LOSSLESS` (`true|false`, default `false`)
 - `PDF_PROFILE_AUTO_ROUTER` (`true|false`, default `false`)
 - `PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI` (default `300`)
 - `PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD` (default `2`)
 - `PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS` (default `150000`)
+- `PDF_FINAL_PREFLIGHT_MEASURE_DPI` (default `450`, capped by active route DPI)
+- `PDF_FINAL_PREFLIGHT_RETRY_STRICT_PIXELS` (default `64`)
+- `PDF_FINAL_PREFLIGHT_RETRY_AGGRESSIVE_PIXELS` (default `256`)
 
 ## Auto-router (STANDARD vs QUALITY_SAFE)
 
@@ -43,6 +49,9 @@ Root cause: CMYK конверсія виконувалась до `white_recolor
   - базовий сигнал: `residual_aggressive_white_pixels` (плюс strict/low-alpha допоміжно);
   - при досягненні порогу risk-score -> маршрут `QUALITY_SAFE`;
   - інакше -> `STANDARD`.
+- DPI для обробки також береться по маршруту:
+  - `STANDARD` -> `RASTERIZE_DPI_STANDARD` (або fallback `RASTERIZE_DPI`);
+  - `QUALITY_SAFE` -> `RASTERIZE_DPI_QUALITY_SAFE` (або fallback `RASTERIZE_DPI`).
 - У результат PDF pipeline пишеться:
   - `pipeline_profile`
   - `pipeline_profile_reason`
@@ -56,13 +65,20 @@ Root cause: CMYK конверсія виконувалась до `white_recolor
 - `Білий фінал (px): strict=<N> | aggressive=<N>`
 - `Час опрацювання: <Nс | Mхв Sс | Hг Mхв Sс>`
 
-## Рекомендований production-профіль (для макетів типу 29658)
+## Рекомендований production-профіль (mixed mode)
 
 - `PDF_COLOR_SPACE=CMYK`
 - `OFFWHITE_HEX=FCFBF7`
-- `RASTERIZE_DPI=1200`
-- `PDF_WHITE_QUALITY_SAFE_PROFILE=true`
-- `PDF_CMYK_LOSSLESS=true`
+- `RASTERIZE_DPI=800`
+- `RASTERIZE_DPI_STANDARD=800`
+- `RASTERIZE_DPI_QUALITY_SAFE=1000`
+- `PDF_WHITE_QUALITY_SAFE_PROFILE=false`
+- `PDF_PROFILE_AUTO_ROUTER=true`
+- `PDF_CMYK_LOSSLESS=false`
+
+Для максимальної якості на окремих критичних кейсах:
+- тимчасово підняти `RASTERIZE_DPI_QUALITY_SAFE` до `1200`;
+- або форсувати `PDF_WHITE_QUALITY_SAFE_PROFILE=true` на короткий період.
 
 ## Валідація інтеграції
 
@@ -85,7 +101,7 @@ Root cause: CMYK конверсія виконувалась до `white_recolor
 ## Ризики/компроміси
 
 - `PDF_CMYK_LOSSLESS=true` збільшує розмір файлів.
-- `RASTERIZE_DPI=1200` підвищує CPU/RAM/time на обробку.
+- Підвищення `RASTERIZE_DPI_QUALITY_SAFE` до `1000/1200` підвищує CPU/RAM/time на обробку.
 
 ## Rollback
 
@@ -94,7 +110,10 @@ Root cause: CMYK конверсія виконувалась до `white_recolor
 - `PDF_WHITE_QUALITY_SAFE_PROFILE=false`
 - `PDF_CMYK_LOSSLESS=false`
 - `OFFWHITE_HEX=FFFEFA`
-- `RASTERIZE_DPI=600`
+- `RASTERIZE_DPI=800`
+- `RASTERIZE_DPI_STANDARD=800`
+- `RASTERIZE_DPI_QUALITY_SAFE=800`
+- `PDF_PROFILE_AUTO_ROUTER=true`
 
 ## Прод-оновлення (рекомендований порядок)
 
@@ -102,13 +121,18 @@ Root cause: CMYK конверсія виконувалась до `white_recolor
 2. Оновити `.env.production`:
    - `PDF_COLOR_SPACE=CMYK`
    - `OFFWHITE_HEX=FFFEFA` (або `FCFBF7` для більш теплого off-white)
-   - `RASTERIZE_DPI=600` (або `1200` для максимальної якості на важких макетах)
+   - `RASTERIZE_DPI=800`
+   - `RASTERIZE_DPI_STANDARD=800`
+   - `RASTERIZE_DPI_QUALITY_SAFE=1000`
    - `PDF_WHITE_QUALITY_SAFE_PROFILE=false`
    - `PDF_CMYK_LOSSLESS=false` (вмикати `true` для quality-safe/high-fidelity)
    - `PDF_PROFILE_AUTO_ROUTER=true`
    - `PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI=300`
    - `PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD=2`
    - `PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS=150000`
+   - `PDF_FINAL_PREFLIGHT_MEASURE_DPI=450`
+   - `PDF_FINAL_PREFLIGHT_RETRY_STRICT_PIXELS=64`
+   - `PDF_FINAL_PREFLIGHT_RETRY_AGGRESSIVE_PIXELS=256`
 3. Виконати деплой контейнерів:
    - `docker compose -f docker-compose.prod.yml --env-file .env.production --profile ops run --rm migrate`
    - `docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build receiver order-worker reaction-worker`
