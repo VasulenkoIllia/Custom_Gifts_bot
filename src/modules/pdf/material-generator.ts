@@ -3079,15 +3079,15 @@ export async function generateMaterialFiles(
         });
       }
 
-      if (normalizedColorSpace === "CMYK") {
-        await convertPdfToCmykInPlace(filePath, Boolean(cmykLossless));
-      }
-
       if (replaceWhiteWithOffWhite) {
         details.white_recolor_final = await applyStrictFinalWhiteCleanup({
           filePath,
           stripSoftMask: material.type === "poster",
         });
+      }
+
+      if (normalizedColorSpace === "CMYK") {
+        await convertPdfToCmykInPlace(filePath, Boolean(cmykLossless));
       }
 
       details.color_space = normalizedColorSpace;
