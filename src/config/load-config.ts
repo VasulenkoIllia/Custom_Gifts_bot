@@ -78,6 +78,12 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     : fs.existsSync(defaultAppleEmojiAssetsDir)
       ? defaultAppleEmojiAssetsDir
       : "";
+  const baseRasterizeDpi = parsePositiveInteger(env.RASTERIZE_DPI, 800);
+  const standardRasterizeDpi = parsePositiveInteger(env.RASTERIZE_DPI_STANDARD, baseRasterizeDpi);
+  const qualitySafeRasterizeDpi = parsePositiveInteger(
+    env.RASTERIZE_DPI_QUALITY_SAFE,
+    baseRasterizeDpi,
+  );
 
   return {
     appRole: parseAppRole(env.APP_ROLE),
@@ -206,7 +212,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       .trim()
       .replace(/^#/, "")
       .toUpperCase(),
-    pdfRasterizeDpi: parsePositiveInteger(env.RASTERIZE_DPI, 600),
+    pdfRasterizeDpi: baseRasterizeDpi,
+    pdfRasterizeDpiStandard: standardRasterizeDpi,
+    pdfRasterizeDpiQualitySafe: qualitySafeRasterizeDpi,
     pdfWhiteQualitySafeProfile: parseBoolean(env.PDF_WHITE_QUALITY_SAFE_PROFILE, false),
     pdfCmykLossless: parseBoolean(env.PDF_CMYK_LOSSLESS, false),
     pdfProfileAutoRouter: parseBoolean(env.PDF_PROFILE_AUTO_ROUTER, false),
@@ -221,6 +229,15 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     pdfProfileAutoRouterAggressiveWhitePixels: parsePositiveInteger(
       env.PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS,
       150_000,
+    ),
+    pdfFinalPreflightMeasureDpi: parsePositiveInteger(env.PDF_FINAL_PREFLIGHT_MEASURE_DPI, 450),
+    pdfFinalPreflightRetryStrictPixels: parseNonNegativeInteger(
+      env.PDF_FINAL_PREFLIGHT_RETRY_STRICT_PIXELS,
+      64,
+    ),
+    pdfFinalPreflightRetryAggressivePixels: parseNonNegativeInteger(
+      env.PDF_FINAL_PREFLIGHT_RETRY_AGGRESSIVE_PIXELS,
+      256,
     ),
     qrA5RightMm: parsePositiveFloat(env.QR_A5_RIGHT_MM, 10),
     qrA5BottomMm: parsePositiveFloat(env.QR_A5_BOTTOM_MM, 10),

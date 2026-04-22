@@ -78,7 +78,7 @@ TypeScript-сервіс для повного циклу обробки замо
   - перший pass обов'язковий;
   - другий pass виконується тільки якщо preflight показав residual near-white;
   - надлишкові повторні проходи не виконуються;
-  - final white cleanup працює на `RASTERIZE_DPI=600` (той самий DPI, що і rasterization).
+  - final white cleanup працює на активному route DPI (`RASTERIZE_DPI_STANDARD` для `STANDARD`, `RASTERIZE_DPI_QUALITY_SAFE` для `QUALITY_SAFE`).
   - у `PDF_COLOR_SPACE=CMYK` фінальний файл завжди конвертується в CMYK;
   - порядок кроків зафіксовано як `final white cleanup -> CMYK conversion`, щоб останній white-pass не повертав PDF у `RGB`;
   - після CMYK конверсії виконується residual near-white postcheck і, за потреби, один додатковий aggressive-pass з повторною CMYK конверсією;
@@ -89,13 +89,16 @@ TypeScript-сервіс для повного циклу обробки замо
 - додатково доступний `quality-safe` режим (для макетів на кшталт 29658):
   - вмикається через `PDF_WHITE_QUALITY_SAFE_PROFILE=true`;
   - використовує strict white-pass (`threshold`), без final white pass;
-  - вмикає один pass у `RASTERIZE_DPI` і зберігає `white=0`;
+  - вмикає один pass у `RASTERIZE_DPI_QUALITY_SAFE` (або fallback `RASTERIZE_DPI`) і зберігає `white=0`;
   - для мінімізації артефактів CMYK-конверсії можна вмикати `PDF_CMYK_LOSSLESS=true` (Flate для color/gray image, без downsample);
-  - рекомендований набір для профілю H6: `OFFWHITE_HEX=FCFBF7`, `RASTERIZE_DPI=1200`, `PDF_COLOR_SPACE=CMYK`, `PDF_WHITE_QUALITY_SAFE_PROFILE=true`, `PDF_CMYK_LOSSLESS=true`.
+  - рекомендований набір для mixed mode: `RASTERIZE_DPI_STANDARD=800`, `RASTERIZE_DPI_QUALITY_SAFE=1000`, `PDF_PROFILE_AUTO_ROUTER=true`, `PDF_WHITE_QUALITY_SAFE_PROFILE=false`.
 - для автоматичного вибору профілю доступний auto-router:
   - `PDF_PROFILE_AUTO_ROUTER=true`;
   - preflight source PDF робиться в `PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI` (default `300`);
   - якщо ризик (residual aggressive near-white) >= `PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS` і score >= `PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD`, замовлення йде через `QUALITY_SAFE`, інакше через `STANDARD`.
+- для прискорення `final preflight` без зміни фінального DPI рендера:
+  - `PDF_FINAL_PREFLIGHT_MEASURE_DPI` (default `450`, але не вище активного route DPI) використовується тільки для postcheck-вимірювання residual near-white;
+  - `PDF_FINAL_PREFLIGHT_RETRY_STRICT_PIXELS` (default `64`) і `PDF_FINAL_PREFLIGHT_RETRY_AGGRESSIVE_PIXELS` (default `256`) задають мінімум residual pixels, після якого запускається дорогий retry-pass.
 - у Telegram caption додано 3 технічні метрики:
   - який профіль застосовано (`STANDARD` / `QUALITY_SAFE`);
   - фінальні white-пікселі після preflight (`strict`, `aggressive`).

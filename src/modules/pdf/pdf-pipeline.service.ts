@@ -63,12 +63,17 @@ type CreatePdfPipelineServiceParams = {
   stickerSizeMm: number;
   offWhiteHex: string;
   rasterizeDpi: number;
+  rasterizeDpiStandard?: number;
+  rasterizeDpiQualitySafe?: number;
   qualitySafeProfile?: boolean;
   cmykLossless?: boolean;
   autoRouterEnabled?: boolean;
   autoRouterPreflightDpi?: number;
   autoRouterRiskThreshold?: number;
   autoRouterAggressiveWhitePixels?: number;
+  finalPreflightMeasureDpi?: number;
+  finalPreflightRetryStrictPixels?: number;
+  finalPreflightRetryAggressivePixels?: number;
   spotifyRequestOptions: SpotifyRequestOptions;
   sourceRequestOptions: {
     timeoutMs: number;
@@ -133,6 +138,11 @@ type PipelineRouteDecision = {
   riskScore: number;
   riskReasons: string[];
   posterRiskSamples: PosterRiskSample[];
+};
+
+type PosterSourceCache = {
+  dir: string;
+  sourcePathByUrl: Map<string, string>;
 };
 
 export function toMaterialGeneratorLayoutPlan(
@@ -245,12 +255,17 @@ export class PdfPipelineService {
   private readonly stickerSizeMm: number;
   private readonly offWhiteHex: string;
   private readonly rasterizeDpi: number;
+  private readonly rasterizeDpiStandard: number;
+  private readonly rasterizeDpiQualitySafe: number;
   private readonly qualitySafeProfile: boolean;
   private readonly cmykLossless: boolean;
   private readonly autoRouterEnabled: boolean;
   private readonly autoRouterPreflightDpi: number;
   private readonly autoRouterRiskThreshold: number;
   private readonly autoRouterAggressiveWhitePixels: number;
+  private readonly finalPreflightMeasureDpi: number;
+  private readonly finalPreflightRetryStrictPixels: number;
+  private readonly finalPreflightRetryAggressivePixels: number;
   private readonly spotifyRequestOptions: SpotifyRequestOptions;
   private readonly sourceRequestOptions: {
     timeoutMs: number;
@@ -278,6 +293,12 @@ export class PdfPipelineService {
     this.stickerSizeMm = params.stickerSizeMm;
     this.offWhiteHex = params.offWhiteHex;
     this.rasterizeDpi = params.rasterizeDpi;
+    this.rasterizeDpiStandard = Number.isFinite(Number(params.rasterizeDpiStandard))
+      ? Math.max(72, Math.floor(Number(params.rasterizeDpiStandard)))
+      : this.rasterizeDpi;
+    this.rasterizeDpiQualitySafe = Number.isFinite(Number(params.rasterizeDpiQualitySafe))
+      ? Math.max(72, Math.floor(Number(params.rasterizeDpiQualitySafe)))
+      : this.rasterizeDpi;
     this.qualitySafeProfile = Boolean(params.qualitySafeProfile);
     this.cmykLossless = Boolean(params.cmykLossless);
     this.autoRouterEnabled = Boolean(params.autoRouterEnabled);
@@ -292,6 +313,21 @@ export class PdfPipelineService {
     )
       ? Math.max(1, Math.floor(Number(params.autoRouterAggressiveWhitePixels)))
       : 150_000;
+    const maxRasterizeDpi = Math.max(this.rasterizeDpiStandard, this.rasterizeDpiQualitySafe);
+    this.finalPreflightMeasureDpi = Number.isFinite(Number(params.finalPreflightMeasureDpi))
+      ? Math.max(
+          72,
+          Math.min(maxRasterizeDpi, Math.floor(Number(params.finalPreflightMeasureDpi))),
+        )
+      : Math.max(72, Math.min(maxRasterizeDpi, 450));
+    this.finalPreflightRetryStrictPixels = Number.isFinite(Number(params.finalPreflightRetryStrictPixels))
+      ? Math.max(0, Math.floor(Number(params.finalPreflightRetryStrictPixels)))
+      : 64;
+    this.finalPreflightRetryAggressivePixels = Number.isFinite(
+      Number(params.finalPreflightRetryAggressivePixels),
+    )
+      ? Math.max(0, Math.floor(Number(params.finalPreflightRetryAggressivePixels)))
+      : 256;
     this.spotifyRequestOptions = params.spotifyRequestOptions;
     this.sourceRequestOptions = params.sourceRequestOptions;
     this.qrPlacementByFormat = params.qrPlacementByFormat;
@@ -328,134 +364,174 @@ export class PdfPipelineService {
     // QR embedding is executed in this TS layer per poster SKU/profile decision.
     materialGeneratorLayoutPlan.qr.shouldGenerate = false;
 
-    const routeDecision = await this.resolvePipelineRoute({
-      orderId,
-      materials: input.layoutPlan.materials,
-    });
-    const useQualitySafeProfile = routeDecision.profile === "quality_safe";
-    const effectiveCmykLossless = this.cmykLossless || useQualitySafeProfile;
+    const pipelineStartedAt = Date.now();
+    const sourceCacheStartedAt = Date.now();
+    const posterSourceCache = await this.preparePosterSourceCache(input.layoutPlan.materials, orderId);
+    const sourceCacheBuildMs = Date.now() - sourceCacheStartedAt;
 
-    this.logger.info("pdf_pipeline_started", {
-      orderId,
-      materials: materialGeneratorLayoutPlan.materials.length,
-      colorSpace: this.colorSpace,
-      qrPlan: this.buildQrPlanCounters(posterQrDecisions),
-      routeProfile: routeDecision.profile,
-      routeReason: routeDecision.reason,
-      routeRiskScore: routeDecision.riskScore,
-      routeRiskReasons: routeDecision.riskReasons,
-    });
+    try {
+      const routeDecisionStartedAt = Date.now();
+      const routeDecision = await this.resolvePipelineRoute({
+        orderId,
+        materials: input.layoutPlan.materials,
+        sourcePathByUrl: posterSourceCache?.sourcePathByUrl,
+      });
+      const routeDecisionMs = Date.now() - routeDecisionStartedAt;
+      const useQualitySafeProfile = routeDecision.profile === "quality_safe";
+      const effectiveRasterizeDpi = this.resolveProfileRasterizeDpi(routeDecision.profile);
+      const effectiveCmykLossless = this.cmykLossless || useQualitySafeProfile;
 
-    const qualitySafeOptions = useQualitySafeProfile
-      ? {
-          whiteThreshold: 254,
-          whiteMaxSaturation: 0.25,
-          whiteReplaceMode: "threshold" as const,
-          whiteMinAlpha: 0,
-          whiteCleanupPasses: 0,
-          whiteCleanupMinChannel: 254,
-          whiteCleanupMaxSaturation: 0.25,
-          whiteHardCleanupPasses: 2,
-          whiteHardCleanupMinChannel: 246,
-          whiteHardCleanupMinLightness: 98.5,
-          whiteHardCleanupDeltaEMax: 14,
-          whiteHardCleanupMaxSaturation: 0.6,
-          whiteSanitizeTransparentRgb: true,
-          whiteAllowSoftMaskFallback: true,
-          whiteReplaceIterations: 1,
-          whiteFinalEnforce: false,
-          whiteFinalIterations: 1,
-        }
-      : {};
+      this.logger.info("pdf_pipeline_started", {
+        orderId,
+        materials: materialGeneratorLayoutPlan.materials.length,
+        colorSpace: this.colorSpace,
+        rasterizeDpi: effectiveRasterizeDpi,
+        qrPlan: this.buildQrPlanCounters(posterQrDecisions),
+        routeProfile: routeDecision.profile,
+        routeReason: routeDecision.reason,
+        routeRiskScore: routeDecision.riskScore,
+        routeRiskReasons: routeDecision.riskReasons,
+        sourceCacheHits: posterSourceCache?.sourcePathByUrl.size ?? 0,
+      });
 
-    const result: PdfPipelineResult = await generateMaterialFiles({
-      layoutPlan: materialGeneratorLayoutPlan,
-      outputRoot: this.outputRoot,
-      orderId,
-      fontPath: this.fontPath,
-      emojiFontPath: this.emojiFontPath,
-      emojiRenderMode: this.emojiRenderMode,
-      appleEmojiBaseUrl: this.appleEmojiBaseUrl,
-      appleEmojiAssetsDir: this.appleEmojiAssetsDir,
-      stickerSizeMm: this.stickerSizeMm,
-      colorSpace: this.colorSpace,
-      qrPlacementByFormat: this.qrPlacementByFormat,
-      replaceWhiteWithOffWhite: true,
-      offWhiteHex: this.offWhiteHex,
-      rasterizeDpi: this.rasterizeDpi,
-      whiteFinalDpi: this.rasterizeDpi,
-      cmykLossless: effectiveCmykLossless,
-      sourceRequestOptions: this.sourceRequestOptions,
-      ...qualitySafeOptions,
-    });
+      const qualitySafeOptions = useQualitySafeProfile
+        ? {
+            whiteThreshold: 254,
+            whiteMaxSaturation: 0.25,
+            whiteReplaceMode: "threshold" as const,
+            whiteMinAlpha: 0,
+            whiteCleanupPasses: 0,
+            whiteCleanupMinChannel: 254,
+            whiteCleanupMaxSaturation: 0.25,
+            whiteHardCleanupPasses: 2,
+            whiteHardCleanupMinChannel: 246,
+            whiteHardCleanupMinLightness: 98.5,
+            whiteHardCleanupDeltaEMax: 14,
+            whiteHardCleanupMaxSaturation: 0.6,
+            whiteSanitizeTransparentRgb: true,
+            whiteAllowSoftMaskFallback: true,
+            whiteReplaceIterations: 1,
+            whiteFinalEnforce: false,
+            whiteFinalIterations: 1,
+          }
+        : {};
 
-    this.attachPipelineRouteDetails({
-      generatedFiles: result.generated,
-      routeDecision,
-    });
-    result.pipeline_profile = routeDecision.profile;
-    result.pipeline_profile_reason = routeDecision.reason;
-    result.pipeline_profile_risk_score = routeDecision.riskScore;
-    result.pipeline_profile_risk_details = {
-      risk_reasons: routeDecision.riskReasons,
-      samples: routeDecision.posterRiskSamples.map((sample) => ({
-        filename: sample.filename,
-        source_url: sample.sourceUrl,
-        strict_white_pixels: sample.strictWhitePixels,
-        aggressive_white_pixels: sample.aggressiveWhitePixels,
-        strict_low_alpha_white_pixels: sample.strictLowAlphaWhitePixels,
-        aggressive_low_alpha_white_pixels: sample.aggressiveLowAlphaWhitePixels,
-        score: sample.score,
-        reasons: sample.reasons,
-      })),
-      aggressive_white_threshold: this.autoRouterAggressiveWhitePixels,
-      route_risk_threshold: this.autoRouterRiskThreshold,
-      preflight_dpi: this.autoRouterPreflightDpi,
-    };
+      const generationStartedAt = Date.now();
+      const result: PdfPipelineResult = await generateMaterialFiles({
+        layoutPlan: materialGeneratorLayoutPlan,
+        outputRoot: this.outputRoot,
+        orderId,
+        fontPath: this.fontPath,
+        emojiFontPath: this.emojiFontPath,
+        emojiRenderMode: this.emojiRenderMode,
+        appleEmojiBaseUrl: this.appleEmojiBaseUrl,
+        appleEmojiAssetsDir: this.appleEmojiAssetsDir,
+        stickerSizeMm: this.stickerSizeMm,
+        colorSpace: this.colorSpace,
+        qrPlacementByFormat: this.qrPlacementByFormat,
+        replaceWhiteWithOffWhite: true,
+        offWhiteHex: this.offWhiteHex,
+        rasterizeDpi: effectiveRasterizeDpi,
+        whiteFinalDpi: effectiveRasterizeDpi,
+        cmykLossless: effectiveCmykLossless,
+        deferPosterCmykConversion: this.colorSpace === "CMYK",
+        sourceRequestOptions: this.sourceRequestOptions,
+        posterSourcePathByUrl: this.toPosterSourcePathRecord(posterSourceCache?.sourcePathByUrl),
+        ...qualitySafeOptions,
+      });
+      const generationMs = Date.now() - generationStartedAt;
 
-    if (qrUrlResolution.warnings.length > 0) {
-      result.warnings.push(...qrUrlResolution.warnings);
+      this.attachPipelineRouteDetails({
+        generatedFiles: result.generated,
+        routeDecision,
+        effectiveRasterizeDpi,
+      });
+      result.pipeline_profile = routeDecision.profile;
+      result.pipeline_profile_reason = routeDecision.reason;
+      result.pipeline_profile_risk_score = routeDecision.riskScore;
+      result.pipeline_profile_risk_details = {
+        risk_reasons: routeDecision.riskReasons,
+        samples: routeDecision.posterRiskSamples.map((sample) => ({
+          filename: sample.filename,
+          source_url: sample.sourceUrl,
+          strict_white_pixels: sample.strictWhitePixels,
+          aggressive_white_pixels: sample.aggressiveWhitePixels,
+          strict_low_alpha_white_pixels: sample.strictLowAlphaWhitePixels,
+          aggressive_low_alpha_white_pixels: sample.aggressiveLowAlphaWhitePixels,
+          score: sample.score,
+          reasons: sample.reasons,
+        })),
+        aggressive_white_threshold: this.autoRouterAggressiveWhitePixels,
+        route_risk_threshold: this.autoRouterRiskThreshold,
+        preflight_dpi: this.autoRouterPreflightDpi,
+      };
+
+      if (qrUrlResolution.warnings.length > 0) {
+        result.warnings.push(...qrUrlResolution.warnings);
+      }
+
+      const qrDecisionWarnings = buildQrDecisionWarnings(
+        Array.from(posterQrDecisions.entries()).map(([filename, entry]) => ({
+          filename,
+          sku: entry.sku,
+          decision: entry.decision,
+        })),
+      );
+      if (qrDecisionWarnings.length > 0) {
+        result.warnings.push(...qrDecisionWarnings);
+      }
+
+      const qrEmbedStartedAt = Date.now();
+      await this.applyPosterQrEmbeds({
+        qrUrl: qrUrlResolution.url,
+        result,
+        decisions: posterQrDecisions,
+      });
+      const qrEmbedMs = Date.now() - qrEmbedStartedAt;
+
+      const finalPreflightStartedAt = Date.now();
+      const finalPreflight = await this.runFinalPdfPreflight(result.generated, effectiveRasterizeDpi);
+      const finalPreflightMs = Date.now() - finalPreflightStartedAt;
+      const totalMs = Date.now() - pipelineStartedAt;
+
+      this.logger.info("pdf_pipeline_finished", {
+        orderId,
+        generated: result.generated.length,
+        failed: result.failed.length,
+        warnings: result.warnings.length,
+        outputDir: result.output_dir,
+        shortenerProvider: qrUrlResolution.provider,
+        finalPreflightFiles: finalPreflight.filesProcessed,
+        finalPreflightCorrectedPixels: finalPreflight.correctedPixels,
+        rasterizeDpi: effectiveRasterizeDpi,
+        finalPreflightMeasureDpi: this.finalPreflightMeasureDpi,
+        finalPreflightRetryStrictPixels: this.finalPreflightRetryStrictPixels,
+        finalPreflightRetryAggressivePixels: this.finalPreflightRetryAggressivePixels,
+        timingTotalMs: totalMs,
+        timingSourceCacheBuildMs: sourceCacheBuildMs,
+        timingRouteDecisionMs: routeDecisionMs,
+        timingGenerationMs: generationMs,
+        timingQrEmbedMs: qrEmbedMs,
+        timingFinalPreflightMs: finalPreflightMs,
+        routeProfile: routeDecision.profile,
+        routeReason: routeDecision.reason,
+        routeRiskScore: routeDecision.riskScore,
+      });
+
+      return result;
+    } finally {
+      await this.cleanupPosterSourceCache(posterSourceCache);
     }
+  }
 
-    const qrDecisionWarnings = buildQrDecisionWarnings(
-      Array.from(posterQrDecisions.entries()).map(([filename, entry]) => ({
-        filename,
-        sku: entry.sku,
-        decision: entry.decision,
-      })),
-    );
-    if (qrDecisionWarnings.length > 0) {
-      result.warnings.push(...qrDecisionWarnings);
-    }
-
-    await this.applyPosterQrEmbeds({
-      qrUrl: qrUrlResolution.url,
-      result,
-      decisions: posterQrDecisions,
-    });
-
-    const finalPreflight = await this.runFinalPdfPreflight(result.generated);
-
-    this.logger.info("pdf_pipeline_finished", {
-      orderId,
-      generated: result.generated.length,
-      failed: result.failed.length,
-      warnings: result.warnings.length,
-      outputDir: result.output_dir,
-      shortenerProvider: qrUrlResolution.provider,
-      finalPreflightFiles: finalPreflight.filesProcessed,
-      finalPreflightCorrectedPixels: finalPreflight.correctedPixels,
-      routeProfile: routeDecision.profile,
-      routeReason: routeDecision.reason,
-      routeRiskScore: routeDecision.riskScore,
-    });
-
-    return result;
+  private resolveProfileRasterizeDpi(profile: PipelineProfile): number {
+    return profile === "quality_safe" ? this.rasterizeDpiQualitySafe : this.rasterizeDpiStandard;
   }
 
   private async resolvePipelineRoute(params: {
     orderId: string;
     materials: LayoutMaterial[];
+    sourcePathByUrl?: Map<string, string>;
   }): Promise<PipelineRouteDecision> {
     if (this.qualitySafeProfile) {
       return {
@@ -510,22 +586,44 @@ export class PdfPipelineService {
 
     const samples: PosterRiskSample[] = [];
     const preflightErrors: string[] = [];
+    const sampleBySourceUrl = new Map<string, PosterRiskSample>();
+    const preflightErrorBySourceUrl = new Map<string, string>();
     try {
       for (const [index, poster] of posters.entries()) {
         const sourceUrl = String(poster.sourceUrl ?? "").trim();
+        const cachedSample = sampleBySourceUrl.get(sourceUrl);
+        if (cachedSample) {
+          samples.push({
+            ...cachedSample,
+            filename: poster.filename,
+          });
+          continue;
+        }
+
+        const cachedError = preflightErrorBySourceUrl.get(sourceUrl);
+        if (cachedError) {
+          preflightErrors.push(`${poster.filename}: ${cachedError}`);
+          continue;
+        }
+
         const safePosterFilename = poster.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
         const tempFilePath = path.join(
           preflightDir,
           `${String(index + 1).padStart(2, "0")}-${safePosterFilename}.pdf`,
         );
+        const cachedSourcePath = String(params.sourcePathByUrl?.get(sourceUrl) ?? "").trim();
+        const useCachedSource = Boolean(cachedSourcePath);
+        const sourcePdfPath = useCachedSource ? cachedSourcePath : tempFilePath;
 
         try {
-          await this.downloadSourcePdfWithRetry({
-            sourceUrl,
-            outputPath: tempFilePath,
-          });
+          if (!useCachedSource) {
+            await this.downloadSourcePdfWithRetry({
+              sourceUrl,
+              outputPath: tempFilePath,
+            });
+          }
           const measured = await measure({
-            filePath: tempFilePath,
+            filePath: sourcePdfPath,
             rasterizeDpi: this.autoRouterPreflightDpi,
           });
           const sample = this.buildPosterRiskSample({
@@ -533,18 +631,23 @@ export class PdfPipelineService {
             sourceUrl,
             measured,
           });
+          sampleBySourceUrl.set(sourceUrl, sample);
           samples.push(sample);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          preflightErrorBySourceUrl.set(sourceUrl, message);
           preflightErrors.push(`${poster.filename}: ${message}`);
           this.logger.warn("pdf_pipeline_route_preflight_failed", {
             orderId: params.orderId,
             filename: poster.filename,
             sourceUrl,
             message,
+            sourceFromCache: useCachedSource,
           });
         } finally {
-          await fs.rm(tempFilePath, { force: true }).catch(() => undefined);
+          if (!useCachedSource) {
+            await fs.rm(tempFilePath, { force: true }).catch(() => undefined);
+          }
         }
       }
     } finally {
@@ -642,6 +745,7 @@ export class PdfPipelineService {
   private attachPipelineRouteDetails(params: {
     generatedFiles: PdfPipelineResult["generated"];
     routeDecision: PipelineRouteDecision;
+    effectiveRasterizeDpi: number;
   }): void {
     const sampleByFilename = new Map(
       params.routeDecision.posterRiskSamples.map((sample) => [sample.filename, sample]),
@@ -660,6 +764,7 @@ export class PdfPipelineService {
         pipeline_profile: params.routeDecision.profile,
         pipeline_route_reason: params.routeDecision.reason,
         pipeline_route_risk_score: params.routeDecision.riskScore,
+        pipeline_route_rasterize_dpi: params.effectiveRasterizeDpi,
         pipeline_route_source_risk: sourceRisk
           ? {
               strict_white_pixels: sourceRisk.strictWhitePixels,
@@ -832,11 +937,9 @@ export class PdfPipelineService {
             posterPdfPath: generatedFile.path,
             spotifyUri: spotifyUriCache,
             placement: decision.spotifyPlacement,
-            codeHex: "FFFFFF",
+            codeHex: this.offWhiteHex,
             requestOptions: this.spotifyRequestOptions,
           });
-
-          await this.enforceOffWhiteAfterOverlay(generatedFile.path);
 
           if (this.colorSpace === "CMYK") {
             await this.convertPdfToCmykInPlace(generatedFile.path);
@@ -949,6 +1052,82 @@ export class PdfPipelineService {
       provider: shortened.provider,
       warnings: shortened.warnings,
     };
+  }
+
+  private async preparePosterSourceCache(
+    materials: LayoutMaterial[],
+    orderId: string,
+  ): Promise<PosterSourceCache | null> {
+    const posterSourceUrls = materials
+      .filter((item): item is LayoutMaterial & { sourceUrl: string } => item.type === "poster")
+      .map((item) => String(item.sourceUrl ?? "").trim())
+      .filter(Boolean);
+    const uniqueSourceUrls = Array.from(new Set(posterSourceUrls));
+    if (uniqueSourceUrls.length === 0) {
+      return null;
+    }
+    const hasDuplicateSourceUrls = uniqueSourceUrls.length < posterSourceUrls.length;
+    const needsRouterPreflightSource = this.autoRouterEnabled && !this.qualitySafeProfile;
+    if (!needsRouterPreflightSource && !hasDuplicateSourceUrls) {
+      return null;
+    }
+
+    const cacheDir = path.join(
+      this.outputRoot,
+      `.tmp-sources-${orderId}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    await fs.mkdir(cacheDir, { recursive: true });
+
+    const sourcePathByUrl = new Map<string, string>();
+    for (const [index, sourceUrl] of uniqueSourceUrls.entries()) {
+      const cachedPath = path.join(cacheDir, `${String(index + 1).padStart(2, "0")}.pdf`);
+      try {
+        await this.downloadSourcePdfWithRetry({
+          sourceUrl,
+          outputPath: cachedPath,
+        });
+        sourcePathByUrl.set(sourceUrl, cachedPath);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn("pdf_pipeline_source_cache_download_failed", {
+          orderId,
+          sourceUrl,
+          message,
+        });
+        await fs.rm(cachedPath, { force: true }).catch(() => undefined);
+      }
+    }
+
+    if (sourcePathByUrl.size === 0) {
+      await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => undefined);
+      return null;
+    }
+
+    return {
+      dir: cacheDir,
+      sourcePathByUrl,
+    };
+  }
+
+  private async cleanupPosterSourceCache(cache: PosterSourceCache | null): Promise<void> {
+    if (!cache) {
+      return;
+    }
+    await fs.rm(cache.dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  private toPosterSourcePathRecord(
+    sourcePathByUrl: Map<string, string> | undefined,
+  ): Record<string, string> | undefined {
+    if (!sourcePathByUrl || sourcePathByUrl.size <= 0) {
+      return undefined;
+    }
+
+    const output: Record<string, string> = {};
+    for (const [sourceUrl, sourcePath] of sourcePathByUrl.entries()) {
+      output[sourceUrl] = sourcePath;
+    }
+    return output;
   }
 
   private async downloadSourcePdfWithRetry(params: {
@@ -1113,21 +1292,9 @@ export class PdfPipelineService {
     });
   }
 
-  private async enforceOffWhiteAfterOverlay(filePath: string): Promise<void> {
-    const enforce = this.getEnforceOffWhiteInPdf();
-    if (!enforce) {
-      return;
-    }
-
-    await enforce({
-      filePath,
-      offWhiteHex: this.offWhiteHex,
-      rasterizeDpi: this.rasterizeDpi,
-    });
-  }
-
   private async runFinalPdfPreflight(
     generatedFiles: PdfPipelineResult["generated"],
+    rasterizeDpi: number,
   ): Promise<{ filesProcessed: number; correctedPixels: number }> {
     const enforce = this.getEnforceOffWhiteInPdf();
     const measureResidual = this.getMeasureResidualNearWhiteInPdf();
@@ -1138,9 +1305,19 @@ export class PdfPipelineService {
       };
     }
 
+    const effectiveRasterizeDpi = Math.max(72, Math.floor(Number(rasterizeDpi)));
+    const effectiveMeasureDpi = Math.max(
+      72,
+      Math.min(effectiveRasterizeDpi, this.finalPreflightMeasureDpi),
+    );
     let correctedPixels = 0;
+    let filesProcessed = 0;
 
     for (const generatedFile of generatedFiles) {
+      if (generatedFile.type !== "poster") {
+        continue;
+      }
+      filesProcessed += 1;
       const details =
         generatedFile.details && typeof generatedFile.details === "object"
           ? (generatedFile.details as Record<string, unknown>)
@@ -1166,7 +1343,7 @@ export class PdfPipelineService {
         const stats = await enforce({
           filePath: generatedFile.path,
           offWhiteHex: this.offWhiteHex,
-          rasterizeDpi: this.rasterizeDpi,
+          rasterizeDpi: effectiveRasterizeDpi,
         });
         residualAfterRetry = this.extractResidualWhiteCounts(stats);
         fileCorrectedPixels = this.extractCorrectedPixelCount(stats);
@@ -1182,7 +1359,7 @@ export class PdfPipelineService {
         cmykPostcheckApplied = true;
         const measuredResidual = await measureResidual({
           filePath: generatedFile.path,
-          rasterizeDpi: this.rasterizeDpi,
+          rasterizeDpi: effectiveMeasureDpi,
         });
         residualAfterRetry = this.extractResidualWhiteCounts(measuredResidual);
 
@@ -1196,20 +1373,23 @@ export class PdfPipelineService {
             const retryStats = await enforce({
               filePath: generatedFile.path,
               offWhiteHex: retryOffWhiteHex,
-              rasterizeDpi: this.rasterizeDpi,
+              rasterizeDpi: effectiveRasterizeDpi,
               profile: "aggressive",
             });
 
             const retryCorrectedPixels = this.extractCorrectedPixelCount(retryStats);
             fileCorrectedPixels += retryCorrectedPixels;
             correctedPixels += retryCorrectedPixels;
+            if (retryCorrectedPixels <= 0) {
+              break;
+            }
 
             await this.convertPdfToCmykInPlace(generatedFile.path);
             cmykApplied = true;
 
             const measuredAfterRetry = await measureResidual({
               filePath: generatedFile.path,
-              rasterizeDpi: this.rasterizeDpi,
+              rasterizeDpi: effectiveMeasureDpi,
             });
             residualAfterRetry = this.extractResidualWhiteCounts(measuredAfterRetry);
             if (!this.hasResidualWhiteCounts(residualAfterRetry)) {
@@ -1233,7 +1413,11 @@ export class PdfPipelineService {
           corrected_pixels: fileCorrectedPixels,
           color_space: this.colorSpace,
           cmyk_applied: cmykApplied,
+          rasterize_dpi: effectiveRasterizeDpi,
           off_white_hex: this.offWhiteHex,
+          measure_dpi: effectiveMeasureDpi,
+          retry_threshold_strict_pixels: this.finalPreflightRetryStrictPixels,
+          retry_threshold_aggressive_pixels: this.finalPreflightRetryAggressivePixels,
           residual_strict_white_pixels: residualAfterRetry.strict,
           residual_aggressive_white_pixels: residualAfterRetry.aggressive,
           residual_strict_low_alpha_white_pixels: residualAfterRetry.strictLowAlpha,
@@ -1243,7 +1427,7 @@ export class PdfPipelineService {
     }
 
     return {
-      filesProcessed: generatedFiles.length,
+      filesProcessed,
       correctedPixels,
     };
   }
@@ -1294,7 +1478,10 @@ export class PdfPipelineService {
     strictLowAlpha: number;
     aggressiveLowAlpha: number;
   }): boolean {
-    return counts.strict > 0 || counts.aggressive > 0;
+    return (
+      counts.strict > this.finalPreflightRetryStrictPixels ||
+      counts.aggressive > this.finalPreflightRetryAggressivePixels
+    );
   }
 
   private extractCorrectedPixelCount(stats: unknown): number {

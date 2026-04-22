@@ -14,6 +14,8 @@ const DEFAULT_SPOTIFY_REQUEST_OPTIONS: SpotifyRequestOptions = {
   retries: 2,
   retryBaseMs: 700,
 };
+const SPOTIFY_CODE_PNG_CACHE_MAX_ENTRIES = 64;
+const spotifyCodePngCache = new Map<string, Buffer>();
 
 function mmToPt(mm: number): number {
   return (mm * 72) / 25.4;
@@ -344,6 +346,53 @@ async function rasterizeSpotifySvgToPng(svgSource: string, targetWidthPx: number
     .toBuffer();
 }
 
+function readSpotifyCodePngCache(cacheKey: string): Buffer | null {
+  const cached = spotifyCodePngCache.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+
+  // Refresh insertion order so we can evict least-recently-used entries.
+  spotifyCodePngCache.delete(cacheKey);
+  spotifyCodePngCache.set(cacheKey, cached);
+  return cached;
+}
+
+function writeSpotifyCodePngCache(cacheKey: string, imageBytes: Buffer): void {
+  spotifyCodePngCache.set(cacheKey, imageBytes);
+  while (spotifyCodePngCache.size > SPOTIFY_CODE_PNG_CACHE_MAX_ENTRIES) {
+    const oldestKey = spotifyCodePngCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    spotifyCodePngCache.delete(oldestKey);
+  }
+}
+
+async function loadSpotifyCodePng(params: {
+  spotifyUri: string;
+  codeHex: string;
+  requestOptions?: Partial<SpotifyRequestOptions>;
+  targetWidthPx: number;
+}): Promise<Buffer> {
+  const { spotifyUri, codeHex, requestOptions, targetWidthPx } = params;
+  const cacheKey = [spotifyUri, codeHex, targetWidthPx].join("|");
+
+  const cached = readSpotifyCodePngCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const svgSource = await downloadSpotifyCodeSvg({
+    spotifyUri,
+    requestOptions,
+  });
+  const sanitizedSvg = sanitizeSpotifyScannableSvg(svgSource, codeHex);
+  const imageBytes = await rasterizeSpotifySvgToPng(sanitizedSvg, targetWidthPx);
+  writeSpotifyCodePngCache(cacheKey, imageBytes);
+  return imageBytes;
+}
+
 export async function embedSpotifyCodeIntoPosterPdf(params: {
   posterPdfPath: string;
   spotifyUri: string;
@@ -361,14 +410,14 @@ export async function embedSpotifyCodeIntoPosterPdf(params: {
   }
 
   const codeHex = normalizeHexColor(params.codeHex ?? "FFFEFA", "FFFEFA");
-  const svgSource = await downloadSpotifyCodeSvg({
-    spotifyUri: params.spotifyUri,
-    requestOptions: params.requestOptions,
-  });
-  const sanitizedSvg = sanitizeSpotifyScannableSvg(svgSource, codeHex);
   // Render at 600 DPI equivalent for the target physical size to avoid upscaling artifacts.
   const targetWidthPx = Math.ceil((params.placement.widthMm / 25.4) * 600);
-  const imageBytes = await rasterizeSpotifySvgToPng(sanitizedSvg, targetWidthPx);
+  const imageBytes = await loadSpotifyCodePng({
+    spotifyUri: params.spotifyUri,
+    codeHex,
+    requestOptions: params.requestOptions,
+    targetWidthPx,
+  });
   const image = await pdfDoc.embedPng(imageBytes);
 
   const widthPt = mmToPt(params.placement.widthMm);

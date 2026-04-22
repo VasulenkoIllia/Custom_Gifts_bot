@@ -3,6 +3,9 @@ import { PDFDocument } from "pdf-lib";
 import * as QRCode from "qrcode";
 import type { QrPlacement } from "./qr-rules";
 
+const QR_PNG_CACHE_MAX_ENTRIES = 128;
+const qrPngCache = new Map<string, Buffer>();
+
 function mmToPt(mm: number): number {
   return (mm * 72) / 25.4;
 }
@@ -53,6 +56,52 @@ function placementToCoordinates(params: {
   };
 }
 
+function readQrPngCache(cacheKey: string): Buffer | null {
+  const cached = qrPngCache.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+
+  qrPngCache.delete(cacheKey);
+  qrPngCache.set(cacheKey, cached);
+  return cached;
+}
+
+function writeQrPngCache(cacheKey: string, imageBytes: Buffer): void {
+  qrPngCache.set(cacheKey, imageBytes);
+  while (qrPngCache.size > QR_PNG_CACHE_MAX_ENTRIES) {
+    const oldestKey = qrPngCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    qrPngCache.delete(oldestKey);
+  }
+}
+
+async function loadQrPng(params: {
+  qrUrl: string;
+  darkHex: string;
+  qrSizePx: number;
+}): Promise<Buffer> {
+  const cacheKey = [params.qrUrl, params.darkHex, params.qrSizePx].join("|");
+  const cached = readQrPngCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const imageBytes = await QRCode.toBuffer(params.qrUrl, {
+    errorCorrectionLevel: "M",
+    margin: 1,
+    width: params.qrSizePx,
+    color: {
+      dark: `#${params.darkHex}`,
+      light: "#0000",
+    },
+  });
+  writeQrPngCache(cacheKey, imageBytes);
+  return imageBytes;
+}
+
 export async function embedQrIntoPosterPdf(params: {
   posterPdfPath: string;
   qrUrl: string;
@@ -70,14 +119,10 @@ export async function embedQrIntoPosterPdf(params: {
   const darkHex = normalizeHexColor(params.qrHex ?? "FFFEFA");
   // Render at 600 DPI equivalent for the target physical size to avoid upscaling artifacts.
   const qrSizePx = Math.ceil((params.placement.widthMm / 25.4) * 600);
-  const qrPng = await QRCode.toBuffer(params.qrUrl, {
-    errorCorrectionLevel: "M",
-    margin: 1,
-    width: qrSizePx,
-    color: {
-      dark: `#${darkHex}`,
-      light: "#0000",
-    },
+  const qrPng = await loadQrPng({
+    qrUrl: params.qrUrl,
+    darkHex,
+    qrSizePx,
   });
 
   const image = await pdfDoc.embedPng(qrPng);

@@ -291,6 +291,20 @@ export function validateConfig(config: AppConfig): void {
   }
 
   if (
+    config.pdfRasterizeDpiStandard !== undefined &&
+    (!Number.isFinite(config.pdfRasterizeDpiStandard) || config.pdfRasterizeDpiStandard <= 0)
+  ) {
+    throw new Error("RASTERIZE_DPI_STANDARD is invalid.");
+  }
+
+  if (
+    config.pdfRasterizeDpiQualitySafe !== undefined &&
+    (!Number.isFinite(config.pdfRasterizeDpiQualitySafe) || config.pdfRasterizeDpiQualitySafe <= 0)
+  ) {
+    throw new Error("RASTERIZE_DPI_QUALITY_SAFE is invalid.");
+  }
+
+  if (
     config.pdfProfileAutoRouter !== undefined &&
     typeof config.pdfProfileAutoRouter !== "boolean"
   ) {
@@ -319,6 +333,29 @@ export function validateConfig(config: AppConfig): void {
       config.pdfProfileAutoRouterAggressiveWhitePixels <= 0)
   ) {
     throw new Error("PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS is invalid.");
+  }
+
+  if (
+    config.pdfFinalPreflightMeasureDpi !== undefined &&
+    (!Number.isFinite(config.pdfFinalPreflightMeasureDpi) || config.pdfFinalPreflightMeasureDpi <= 0)
+  ) {
+    throw new Error("PDF_FINAL_PREFLIGHT_MEASURE_DPI is invalid.");
+  }
+
+  if (
+    config.pdfFinalPreflightRetryStrictPixels !== undefined &&
+    (!Number.isFinite(config.pdfFinalPreflightRetryStrictPixels) ||
+      config.pdfFinalPreflightRetryStrictPixels < 0)
+  ) {
+    throw new Error("PDF_FINAL_PREFLIGHT_RETRY_STRICT_PIXELS is invalid.");
+  }
+
+  if (
+    config.pdfFinalPreflightRetryAggressivePixels !== undefined &&
+    (!Number.isFinite(config.pdfFinalPreflightRetryAggressivePixels) ||
+      config.pdfFinalPreflightRetryAggressivePixels < 0)
+  ) {
+    throw new Error("PDF_FINAL_PREFLIGHT_RETRY_AGGRESSIVE_PIXELS is invalid.");
   }
 
   if (!Number.isFinite(config.qrA5RightMm) || config.qrA5RightMm <= 0) {

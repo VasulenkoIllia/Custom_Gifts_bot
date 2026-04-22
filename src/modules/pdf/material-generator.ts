@@ -309,6 +309,8 @@ export type GenerateMaterialFilesInput = {
   colorSpace?: string;
   qrPlacementByFormat?: Record<string, { rightMm?: number; bottomMm?: number; sizeMm?: number; xMm?: number; yMm?: number }>;
   sourceRequestOptions?: SourceRequestOptions;
+  posterSourcePathByUrl?: Record<string, string>;
+  deferPosterCmykConversion?: boolean;
   replaceWhiteWithOffWhite?: boolean;
   offWhiteHex?: string;
   whiteThreshold?: number;
@@ -2682,6 +2684,34 @@ async function downloadFile(options: {
   throw lastError ?? new Error("Failed to download poster PDF.");
 }
 
+async function tryCopyPosterSourceFromCache(options: {
+  sourceUrl: string;
+  outPath: string;
+  posterSourcePathByUrl?: Record<string, string>;
+}): Promise<Record<string, unknown> | null> {
+  const { sourceUrl, outPath, posterSourcePathByUrl } = options;
+  const normalizedSourceUrl = String(sourceUrl ?? "").trim();
+  if (!normalizedSourceUrl || !posterSourcePathByUrl) {
+    return null;
+  }
+
+  const cachedPath = String(posterSourcePathByUrl[normalizedSourceUrl] ?? "").trim();
+  if (!cachedPath) {
+    return null;
+  }
+
+  try {
+    await fsp.copyFile(cachedPath, outPath);
+    const stats = await fsp.stat(cachedPath);
+    return {
+      bytes: Number.isFinite(Number(stats.size)) ? Number(stats.size) : 0,
+      source_cache_hit: true,
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -2702,6 +2732,8 @@ export async function generateMaterialFiles(
     colorSpace = "RGB",
     qrPlacementByFormat = {},
     sourceRequestOptions = {},
+    posterSourcePathByUrl = {},
+    deferPosterCmykConversion = false,
     replaceWhiteWithOffWhite = true,
     offWhiteHex = "FFFEFA",
     whiteThreshold = 252,
@@ -2876,6 +2908,27 @@ export async function generateMaterialFiles(
     };
   };
 
+  const shouldRunStrictFinalWhiteCleanup = (source: Record<string, unknown> | null): boolean => {
+    if (!source) {
+      return true;
+    }
+
+    if (source.preflight_failed_after_retry === true) {
+      return true;
+    }
+
+    const strictResidual = Math.max(
+      readPositiveCount(source, "preflight_residual_strict_white_pixels"),
+      readPositiveCount(source, "residual_strict_white_pixels"),
+    );
+    const aggressiveResidual = Math.max(
+      readPositiveCount(source, "preflight_residual_aggressive_white_pixels"),
+      readPositiveCount(source, "residual_aggressive_white_pixels"),
+    );
+
+    return strictResidual > 0 || aggressiveResidual > 0;
+  };
+
   const applyWhiteRecolorWithIterations = async (opts: {
     filePath: string;
     stripSoftMask: boolean;
@@ -3020,11 +3073,20 @@ export async function generateMaterialFiles(
       let whiteRecolorAppliedEarly = false;
 
       if (material.type === "poster") {
-        details = await downloadFile({
-          url: material.sourceUrl,
+        const sourceUrl = String(material.sourceUrl ?? "").trim();
+        const cachedSourceDetails = await tryCopyPosterSourceFromCache({
+          sourceUrl,
           outPath: filePath,
-          sourceRequestOptions: safeSourceRequestOptions,
+          posterSourcePathByUrl,
         });
+
+        details =
+          cachedSourceDetails ??
+          (await downloadFile({
+            url: material.sourceUrl,
+            outPath: filePath,
+            sourceRequestOptions: safeSourceRequestOptions,
+          }));
 
         if (replaceWhiteWithOffWhite) {
           details.white_recolor = await applyWhiteRecolorWithIterations({
@@ -3080,17 +3142,42 @@ export async function generateMaterialFiles(
       }
 
       if (replaceWhiteWithOffWhite) {
-        details.white_recolor_final = await applyStrictFinalWhiteCleanup({
-          filePath,
-          stripSoftMask: material.type === "poster",
-        });
+        const whiteRecolorStats =
+          details.white_recolor && typeof details.white_recolor === "object"
+            ? (details.white_recolor as Record<string, unknown>)
+            : null;
+        const shouldRunFinalCleanup =
+          material.type === "poster" ||
+          !whiteFinalEnforce ||
+          shouldRunStrictFinalWhiteCleanup(whiteRecolorStats);
+
+        if (shouldRunFinalCleanup) {
+          details.white_recolor_final = await applyStrictFinalWhiteCleanup({
+            filePath,
+            stripSoftMask: material.type === "poster",
+          });
+        } else {
+          details.white_recolor_final = {
+            applied: false,
+            reason: "skipped_clean_after_early_pass",
+            residual_strict_white_pixels: 0,
+            residual_aggressive_white_pixels: 0,
+          };
+        }
       }
 
-      if (normalizedColorSpace === "CMYK") {
+      const shouldConvertCmykNow =
+        normalizedColorSpace === "CMYK" &&
+        !(material.type === "poster" && Boolean(deferPosterCmykConversion));
+
+      if (shouldConvertCmykNow) {
         await convertPdfToCmykInPlace(filePath, Boolean(cmykLossless));
       }
 
-      details.color_space = normalizedColorSpace;
+      details.color_space = shouldConvertCmykNow ? normalizedColorSpace : "RGB";
+      if (normalizedColorSpace === "CMYK" && material.type === "poster" && !shouldConvertCmykNow) {
+        details.cmyk_deferred = true;
+      }
 
       generated.push({ type: material.type, filename: fileName, path: filePath, details });
     } catch (error) {
