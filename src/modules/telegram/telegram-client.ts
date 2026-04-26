@@ -50,10 +50,10 @@ type BuildCaptionParams = {
 };
 
 export type PipelineCaptionMetrics = {
-  pipelineProfile: "standard" | "quality_safe" | string;
-  pipelineReason?: string | null;
+  rasterizeDpi: number;
   finalWhiteStrictPixels: number;
   finalWhiteAggressivePixels: number;
+  finalWhiteCorrectedPixels?: number | null;
   orderProcessingDurationMs?: number | null;
 };
 
@@ -294,10 +294,7 @@ export function buildCaption({
   }
 
   if (pipelineMetrics) {
-    const normalizedProfile = String(pipelineMetrics.pipelineProfile ?? "standard")
-      .trim()
-      .toUpperCase();
-    const normalizedReason = String(pipelineMetrics.pipelineReason ?? "").trim();
+    const dpi = Math.max(0, Math.floor(Number(pipelineMetrics.rasterizeDpi ?? 0) || 0));
     const strictPixels = Math.max(
       0,
       Math.floor(Number(pipelineMetrics.finalWhiteStrictPixels ?? 0) || 0),
@@ -306,11 +303,14 @@ export function buildCaption({
       0,
       Math.floor(Number(pipelineMetrics.finalWhiteAggressivePixels ?? 0) || 0),
     );
+    const correctedPixels = Math.max(
+      0,
+      Math.floor(Number(pipelineMetrics.finalWhiteCorrectedPixels ?? 0) || 0),
+    );
 
     lines.push(
       "",
-      `Пайплайн: ${normalizedProfile}${normalizedReason ? ` (${normalizedReason})` : ""}`,
-      `Білий фінал (px): strict=${strictPixels} | aggressive=${aggressivePixels}`,
+      `DPI: ${dpi} | Білий (px): strict=${strictPixels} | agg=${aggressivePixels} | corrected=${correctedPixels}`,
     );
 
     const processingDurationMs = Number(pipelineMetrics.orderProcessingDurationMs);

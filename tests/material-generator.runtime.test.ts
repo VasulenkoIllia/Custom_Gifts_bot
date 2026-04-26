@@ -324,13 +324,8 @@ test("generateMaterialFiles preserves soft mask for posters with internal transp
   assert.equal(whiteRecolor?.strip_soft_mask_applied, false);
   assert.equal(whiteRecolor?.strip_soft_mask_fallback_pages, 1);
   assert.equal(whiteRecolor?.iterations_requested, 3);
-
-  const finalWhiteRecolor =
-    generated.details.white_recolor_final && typeof generated.details.white_recolor_final === "object"
-      ? (generated.details.white_recolor_final as Record<string, unknown>)
-      : null;
-  assert.ok(finalWhiteRecolor);
-  assert.equal(finalWhiteRecolor?.iterations_requested, 3);
+  assert.equal(whiteRecolor?.smart_retry_enabled, false);
+  assert.equal("white_recolor_final" in generated.details, false);
 
   const outputPdf = await fs.readFile(generated.path);
   assert.ok(outputPdf.includes(Buffer.from("/SMask")));

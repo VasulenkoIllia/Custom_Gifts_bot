@@ -20,10 +20,7 @@ export type PdfPipelineResult = {
   warnings: string[];
   generated: PdfGeneratedFile[];
   failed: PdfFailedFile[];
-  pipeline_profile?: "standard" | "quality_safe";
-  pipeline_profile_reason?: string;
-  pipeline_profile_risk_score?: number;
-  pipeline_profile_risk_details?: Record<string, unknown>;
+  rasterize_dpi?: number;
 };
 
 export type GeneratePdfMaterialsInput = {

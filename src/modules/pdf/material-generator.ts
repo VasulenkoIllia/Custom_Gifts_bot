@@ -152,6 +152,26 @@ type RecolorWhiteStats = {
   premultiplied_input: boolean;
 };
 
+type SecondPassOptions = {
+  threshold?: number;
+  maxSaturation?: number;
+  mode?: string;
+  labDeltaEMax?: number;
+  labSoftness?: number;
+  minLightness?: number;
+  featherPx?: number;
+  minAlpha?: number;
+  cleanupPasses?: number;
+  cleanupMinChannel?: number;
+  cleanupMaxSaturation?: number;
+  hardCleanupPasses?: number;
+  hardCleanupMinChannel?: number;
+  hardCleanupMinLightness?: number;
+  hardCleanupDeltaEMax?: number;
+  hardCleanupMaxSaturation?: number;
+  sanitizeTransparentRgb?: boolean;
+};
+
 type ReplaceWhiteOptions = {
   filePath: string;
   offWhiteHex?: string;
@@ -175,6 +195,9 @@ type ReplaceWhiteOptions = {
   hardCleanupMaxSaturation?: number;
   sanitizeTransparentRgb?: boolean;
   allowSoftMaskFallback?: boolean;
+  // When set, runs a second recolor pass on the same rasterized PNGs before rebuilding the PDF.
+  // Eliminates one full GhostScript rasterize+rebuild cycle per material.
+  secondPass?: SecondPassOptions | null;
 };
 
 type MeasureResidualNearWhiteInPdfInput = {
@@ -296,6 +319,33 @@ export type PdfPipelineResult = {
   failed: PdfFailedFile[];
 };
 
+export type RasterizeSemaphore = {
+  acquire(): Promise<void>;
+  release(): void;
+};
+
+export function createRasterizeSemaphore(limit: number): RasterizeSemaphore {
+  let available = Math.max(1, limit);
+  const queue: Array<() => void> = [];
+  return {
+    acquire() {
+      if (available > 0) {
+        available--;
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => queue.push(resolve));
+    },
+    release() {
+      const next = queue.shift();
+      if (next) {
+        next();
+      } else {
+        available++;
+      }
+    },
+  };
+}
+
 export type GenerateMaterialFilesInput = {
   layoutPlan: LayoutPlanInput;
   outputRoot: string;
@@ -339,6 +389,7 @@ export type GenerateMaterialFilesInput = {
   whiteFinalMaxSaturation?: number;
   whiteFinalDpi?: number;
   cmykLossless?: boolean;
+  rasterizeSemaphore?: RasterizeSemaphore;
 };
 
 export type EnforceOffWhiteInput = {
@@ -1584,7 +1635,7 @@ async function replaceWhiteInPdfWithOffWhiteInPlace(
 ): Promise<Record<string, unknown>> {
   const {
     filePath,
-    offWhiteHex = "FFFEFA",
+    offWhiteHex = "F7F6F2",
     threshold = 245,
     maxSaturation = 0.12,
     dpi = 300,
@@ -1736,6 +1787,50 @@ async function replaceWhiteInPdfWithOffWhiteInPlace(
       if (stats.premultiplied_input) premultipliedPages += 1;
     }
 
+    // Second pass: run an additional recolor on the same PNGs before rebuilding the PDF.
+    // This avoids a separate GhostScript rasterize+rebuild cycle for the final strict cleanup.
+    let sp2ReplacedPixels = 0;
+    let sp2ResidualStrict = 0;
+    let sp2ResidualAggressive = 0;
+    let sp2ResidualStrictLowAlpha = 0;
+    let sp2ResidualAggressiveLowAlpha = 0;
+    const sp = options.secondPass ?? null;
+    if (sp) {
+      for (const pngPath of pngFiles) {
+        const sp2Stats = recolorWhitePngInPlace({
+          pngPath,
+          targetRgb,
+          threshold: sp.threshold ?? safeThreshold,
+          maxSaturation: sp.maxSaturation ?? safeMaxSaturation,
+          mode: sp.mode ?? safeMode,
+          labDeltaEMax: sp.labDeltaEMax ?? safeLabDeltaEMax,
+          labSoftness: sp.labSoftness ?? safeLabSoftness,
+          minLightness: sp.minLightness ?? safeMinLightness,
+          featherPx: sp.featherPx ?? 0,
+          minAlpha: sp.minAlpha ?? 0,
+          cleanupPasses: sp.cleanupPasses ?? 0,
+          cleanupMinChannel: sp.cleanupMinChannel ?? safeCleanupMinChannel,
+          cleanupMaxSaturation: sp.cleanupMaxSaturation ?? safeCleanupMaxSaturation,
+          hardCleanupPasses: sp.hardCleanupPasses ?? 0,
+          hardCleanupMinChannel: sp.hardCleanupMinChannel ?? safeHardCleanupMinChannel,
+          hardCleanupMinLightness: sp.hardCleanupMinLightness ?? safeHardCleanupMinLightness,
+          hardCleanupDeltaEMax: sp.hardCleanupDeltaEMax ?? safeHardCleanupDeltaEMax,
+          hardCleanupMaxSaturation: sp.hardCleanupMaxSaturation ?? safeHardCleanupMaxSaturation,
+          sanitizeTransparentRgb: sp.sanitizeTransparentRgb ?? safeSanitizeTransparentRgb,
+        });
+        sp2ReplacedPixels += sp2Stats.replacedPixels;
+        sp2ResidualStrict += sp2Stats.residualStrictWhitePixels;
+        sp2ResidualAggressive += sp2Stats.residualAggressiveWhitePixels;
+        sp2ResidualStrictLowAlpha += sp2Stats.residualStrictLowAlphaWhitePixels;
+        sp2ResidualAggressiveLowAlpha += sp2Stats.residualAggressiveLowAlphaWhitePixels;
+      }
+      // Override outer residual counters so the return reflects the FINAL state (after both passes).
+      residualStrictWhitePixels = sp2ResidualStrict;
+      residualAggressiveWhitePixels = sp2ResidualAggressive;
+      residualStrictLowAlphaWhitePixels = sp2ResidualStrictLowAlpha;
+      residualAggressiveLowAlphaWhitePixels = sp2ResidualAggressiveLowAlpha;
+    }
+
     let stripSoftMaskApplied = false;
     let softMaskFallbackPages = 0;
     let opaqueCropPages = 0;
@@ -1800,6 +1895,12 @@ async function replaceWhiteInPdfWithOffWhiteInPlace(
       strip_soft_mask_applied: stripSoftMaskApplied,
       strip_soft_mask_opaque_pages: opaqueCropPages,
       strip_soft_mask_fallback_pages: softMaskFallbackPages,
+      second_pass_applied: Boolean(sp),
+      second_pass_replaced_pixels: sp2ReplacedPixels,
+      second_pass_residual_strict_white_pixels: sp2ResidualStrict,
+      second_pass_residual_aggressive_white_pixels: sp2ResidualAggressive,
+      second_pass_residual_strict_low_alpha_white_pixels: sp2ResidualStrictLowAlpha,
+      second_pass_residual_aggressive_low_alpha_white_pixels: sp2ResidualAggressiveLowAlpha,
     };
   } catch (error) {
     await fsp.rm(outputPdfPath, { force: true }).catch(() => {});
@@ -2735,7 +2836,7 @@ export async function generateMaterialFiles(
     posterSourcePathByUrl = {},
     deferPosterCmykConversion = false,
     replaceWhiteWithOffWhite = true,
-    offWhiteHex = "FFFEFA",
+    offWhiteHex = "F7F6F2",
     whiteThreshold = 252,
     whiteMaxSaturation = 0.03,
     rasterizeDpi = 300,
@@ -2756,12 +2857,13 @@ export async function generateMaterialFiles(
     whiteSanitizeTransparentRgb = true,
     whiteAllowSoftMaskFallback = false,
     whiteReplaceIterations = 3,
-    whiteFinalEnforce = true,
+    whiteFinalEnforce = false,
     whiteFinalIterations = 3,
     whiteFinalThreshold = 254,
     whiteFinalMaxSaturation = 0.25,
     whiteFinalDpi = 300,
     cmykLossless = false,
+    rasterizeSemaphore,
   } = input;
 
   const resolvedOutputRoot = path.resolve(outputRoot);
@@ -2804,7 +2906,6 @@ export async function generateMaterialFiles(
     ? Math.max(0, Math.min(1, Number(whiteHardCleanupMaxSaturation)))
     : 0.6;
   const safeWhiteSanitizeTransparentRgb = Boolean(whiteSanitizeTransparentRgb);
-  const smartRetryMaxAttempts = 2;
   const safeEmojiRenderMode =
     String(emojiRenderMode ?? "font").trim().toLowerCase() === "apple_image"
       ? ("apple_image" as const)
@@ -2883,310 +2984,246 @@ export async function generateMaterialFiles(
   const generated: PdfGeneratedFile[] = [];
   const failed: PdfFailedFile[] = [];
 
-  const readPositiveCount = (source: Record<string, unknown> | null, key: string): number => {
-    if (!source || !(key in source)) return 0;
-    const value = Number(source[key]);
-    if (!Number.isFinite(value) || value <= 0) return 0;
-    return Math.max(0, Math.floor(value));
-  };
-
-  const evaluateWhitePreflight = (source: Record<string, unknown> | null) => {
-    const strict = readPositiveCount(source, "residual_strict_white_pixels");
-    const aggressive = readPositiveCount(source, "residual_aggressive_white_pixels");
-    const strictLowAlpha = readPositiveCount(source, "residual_strict_low_alpha_white_pixels");
-    const aggressiveLowAlpha = readPositiveCount(
-      source,
-      "residual_aggressive_low_alpha_white_pixels",
-    );
-
-    return {
-      strict,
-      aggressive,
-      strictLowAlpha,
-      aggressiveLowAlpha,
-      failed: strict > 0 || aggressive > 0,
-    };
-  };
-
-  const shouldRunStrictFinalWhiteCleanup = (source: Record<string, unknown> | null): boolean => {
-    if (!source) {
-      return true;
-    }
-
-    if (source.preflight_failed_after_retry === true) {
-      return true;
-    }
-
-    const strictResidual = Math.max(
-      readPositiveCount(source, "preflight_residual_strict_white_pixels"),
-      readPositiveCount(source, "residual_strict_white_pixels"),
-    );
-    const aggressiveResidual = Math.max(
-      readPositiveCount(source, "preflight_residual_aggressive_white_pixels"),
-      readPositiveCount(source, "residual_aggressive_white_pixels"),
-    );
-
-    return strictResidual > 0 || aggressiveResidual > 0;
-  };
-
-  const applyWhiteRecolorWithIterations = async (opts: {
+  // Runs the main white recolor. A legacy in-raster strict cleanup can still be
+  // enabled explicitly, but the default path leaves retry decisions to final
+  // preflight after CMYK conversion.
+  const applyWhiteRecolor = async (opts: {
     filePath: string;
     stripSoftMask: boolean;
-  }): Promise<Record<string, unknown>> => {
-    let lastStats: Record<string, unknown> | null = null;
-    let iterationsUsed = 0;
-    let smartRetryTriggered = false;
-    let preflight = {
-      strict: 0,
-      aggressive: 0,
-      strictLowAlpha: 0,
-      aggressiveLowAlpha: 0,
-      failed: false,
-    };
-    const maxAttempts = Math.max(1, Math.min(smartRetryMaxAttempts, safeWhiteReplaceIterations));
+  }): Promise<{ mainStats: Record<string, unknown>; finalStats: Record<string, unknown> | null }> => {
+    const secondPassOpts: SecondPassOptions | null = whiteFinalEnforce
+      ? {
+          threshold: safeWhiteFinalThreshold,
+          maxSaturation: safeWhiteFinalMaxSaturation,
+          mode: "threshold",
+          minAlpha: 0,
+          cleanupPasses: 0,
+          cleanupMinChannel: safeWhiteFinalThreshold,
+          cleanupMaxSaturation: safeWhiteFinalMaxSaturation,
+          hardCleanupPasses: safeWhiteHardCleanupPasses,
+          hardCleanupMinChannel: safeWhiteHardCleanupMinChannel,
+          hardCleanupMinLightness: safeWhiteHardCleanupMinLightness,
+          hardCleanupDeltaEMax: safeWhiteHardCleanupDeltaEMax,
+          hardCleanupMaxSaturation: safeWhiteHardCleanupMaxSaturation,
+          sanitizeTransparentRgb: safeWhiteSanitizeTransparentRgb,
+        }
+      : null;
 
-    for (let pass = 0; pass < maxAttempts; pass += 1) {
-      const passStats = await replaceWhiteInPdfWithOffWhiteInPlace({
-        filePath: opts.filePath,
-        offWhiteHex,
-        threshold: whiteThreshold,
-        maxSaturation: whiteMaxSaturation,
-        dpi: rasterizeDpi,
-        stripSoftMask: opts.stripSoftMask,
-        mode: whiteReplaceMode,
-        labDeltaEMax: whiteLabDeltaEMax,
-        labSoftness: whiteLabSoftness,
-        minLightness: whiteMinLightness,
-        featherPx: whiteFeatherPx,
-        minAlpha: whiteMinAlpha,
-        cleanupPasses: whiteCleanupPasses,
-        cleanupMinChannel: whiteCleanupMinChannel,
-        cleanupMaxSaturation: whiteCleanupMaxSaturation,
-        hardCleanupPasses: safeWhiteHardCleanupPasses,
-        hardCleanupMinChannel: safeWhiteHardCleanupMinChannel,
-        hardCleanupMinLightness: safeWhiteHardCleanupMinLightness,
-        hardCleanupDeltaEMax: safeWhiteHardCleanupDeltaEMax,
-        hardCleanupMaxSaturation: safeWhiteHardCleanupMaxSaturation,
-        sanitizeTransparentRgb: safeWhiteSanitizeTransparentRgb,
-        allowSoftMaskFallback: opts.stripSoftMask ? true : whiteAllowSoftMaskFallback,
-      });
-      lastStats = passStats;
-      iterationsUsed += 1;
-      preflight = evaluateWhitePreflight(passStats);
+    const combined = await replaceWhiteInPdfWithOffWhiteInPlace({
+      filePath: opts.filePath,
+      offWhiteHex,
+      threshold: whiteThreshold,
+      maxSaturation: whiteMaxSaturation,
+      dpi: rasterizeDpi,
+      stripSoftMask: opts.stripSoftMask,
+      mode: whiteReplaceMode,
+      labDeltaEMax: whiteLabDeltaEMax,
+      labSoftness: whiteLabSoftness,
+      minLightness: whiteMinLightness,
+      featherPx: whiteFeatherPx,
+      minAlpha: whiteMinAlpha,
+      cleanupPasses: whiteCleanupPasses,
+      cleanupMinChannel: whiteCleanupMinChannel,
+      cleanupMaxSaturation: whiteCleanupMaxSaturation,
+      hardCleanupPasses: safeWhiteHardCleanupPasses,
+      hardCleanupMinChannel: safeWhiteHardCleanupMinChannel,
+      hardCleanupMinLightness: safeWhiteHardCleanupMinLightness,
+      hardCleanupDeltaEMax: safeWhiteHardCleanupDeltaEMax,
+      hardCleanupMaxSaturation: safeWhiteHardCleanupMaxSaturation,
+      sanitizeTransparentRgb: safeWhiteSanitizeTransparentRgb,
+      allowSoftMaskFallback: opts.stripSoftMask ? true : whiteAllowSoftMaskFallback,
+      secondPass: secondPassOpts,
+    });
 
-      if (preflight.failed && pass + 1 < maxAttempts) {
-        smartRetryTriggered = true;
-        continue;
-      }
-      break;
-    }
-
-    return {
-      ...(lastStats ?? {}),
+    const mainStats: Record<string, unknown> = {
+      ...combined,
       iterations_requested: safeWhiteReplaceIterations,
-      iterations_cap: maxAttempts,
-      iterations_used: iterationsUsed,
-      smart_retry_enabled: true,
-      smart_retry_triggered: smartRetryTriggered,
-      preflight_failed_after_retry: preflight.failed,
-      preflight_residual_strict_white_pixels: preflight.strict,
-      preflight_residual_aggressive_white_pixels: preflight.aggressive,
-      preflight_residual_strict_low_alpha_white_pixels: preflight.strictLowAlpha,
-      preflight_residual_aggressive_low_alpha_white_pixels: preflight.aggressiveLowAlpha,
+      iterations_cap: 1,
+      iterations_used: 1,
+      smart_retry_enabled: false,
+      smart_retry_triggered: false,
+      preflight_failed_after_retry:
+        Number(combined.residual_strict_white_pixels ?? 0) > 0 ||
+        Number(combined.residual_aggressive_white_pixels ?? 0) > 0,
+      preflight_residual_strict_white_pixels: combined.residual_strict_white_pixels ?? 0,
+      preflight_residual_aggressive_white_pixels: combined.residual_aggressive_white_pixels ?? 0,
+      preflight_residual_strict_low_alpha_white_pixels:
+        combined.residual_strict_low_alpha_white_pixels ?? 0,
+      preflight_residual_aggressive_low_alpha_white_pixels:
+        combined.residual_aggressive_low_alpha_white_pixels ?? 0,
     };
+
+    const sp2ResidualStrict = Number(combined.second_pass_residual_strict_white_pixels ?? 0);
+    const sp2ResidualAggressive = Number(combined.second_pass_residual_aggressive_white_pixels ?? 0);
+    const sp2ResidualStrictLowAlpha = Number(
+      combined.second_pass_residual_strict_low_alpha_white_pixels ?? 0,
+    );
+    const sp2ResidualAggressiveLowAlpha = Number(
+      combined.second_pass_residual_aggressive_low_alpha_white_pixels ?? 0,
+    );
+
+    const finalStats: Record<string, unknown> | null = whiteFinalEnforce
+      ? {
+          applied: true,
+          mode: "strict_final_near_white",
+          target_hex: combined.target_hex,
+          threshold: safeWhiteFinalThreshold,
+          max_saturation: safeWhiteFinalMaxSaturation,
+          dpi: combined.dpi,
+          pages: combined.pages,
+          replaced_pixels: combined.second_pass_replaced_pixels ?? 0,
+          residual_strict_white_pixels: sp2ResidualStrict,
+          residual_aggressive_white_pixels: sp2ResidualAggressive,
+          residual_strict_low_alpha_white_pixels: sp2ResidualStrictLowAlpha,
+          residual_aggressive_low_alpha_white_pixels: sp2ResidualAggressiveLowAlpha,
+          iterations_requested: safeWhiteFinalIterations,
+          iterations_cap: 1,
+          iterations_used: 1,
+          smart_retry_enabled: false,
+          smart_retry_triggered: false,
+          preflight_failed_after_retry: sp2ResidualStrict > 0 || sp2ResidualAggressive > 0,
+          preflight_residual_strict_white_pixels: sp2ResidualStrict,
+          preflight_residual_aggressive_white_pixels: sp2ResidualAggressive,
+          preflight_residual_strict_low_alpha_white_pixels: sp2ResidualStrictLowAlpha,
+          preflight_residual_aggressive_low_alpha_white_pixels: sp2ResidualAggressiveLowAlpha,
+        }
+      : null;
+
+    return { mainStats, finalStats };
   };
 
-  const applyStrictFinalWhiteCleanup = async (opts: {
-    filePath: string;
-    stripSoftMask: boolean;
-  }): Promise<Record<string, unknown>> => {
-    if (!whiteFinalEnforce) {
-      return { applied: false, reason: "disabled" };
-    }
+  type MaterialResult =
+    | { originalIndex: number; kind: "generated"; entry: PdfGeneratedFile }
+    | { originalIndex: number; kind: "failed"; entry: PdfFailedFile };
 
-    let lastStats: Record<string, unknown> | null = null;
-    let iterationsUsed = 0;
-    let smartRetryTriggered = false;
-    let preflight = {
-      strict: 0,
-      aggressive: 0,
-      strictLowAlpha: 0,
-      aggressiveLowAlpha: 0,
-      failed: false,
-    };
-    const maxAttempts = Math.max(1, Math.min(smartRetryMaxAttempts, safeWhiteFinalIterations));
+  const materialResults: MaterialResult[] = [];
 
-    for (let pass = 0; pass < maxAttempts; pass += 1) {
-      const passStats = await replaceWhiteInPdfWithOffWhiteInPlace({
-        filePath: opts.filePath,
-        offWhiteHex,
-        threshold: safeWhiteFinalThreshold,
-        maxSaturation: safeWhiteFinalMaxSaturation,
-        dpi: safeWhiteFinalDpi,
-        stripSoftMask: opts.stripSoftMask,
-        mode: "threshold",
-        minAlpha: 0,
-        cleanupPasses: 0,
-        cleanupMinChannel: safeWhiteFinalThreshold,
-        cleanupMaxSaturation: safeWhiteFinalMaxSaturation,
-        hardCleanupPasses: safeWhiteHardCleanupPasses,
-        hardCleanupMinChannel: safeWhiteHardCleanupMinChannel,
-        hardCleanupMinLightness: safeWhiteHardCleanupMinLightness,
-        hardCleanupDeltaEMax: safeWhiteHardCleanupDeltaEMax,
-        hardCleanupMaxSaturation: safeWhiteHardCleanupMaxSaturation,
-        sanitizeTransparentRgb: safeWhiteSanitizeTransparentRgb,
-        allowSoftMaskFallback: true,
-      });
-      lastStats = passStats;
-      iterationsUsed += 1;
-      preflight = evaluateWhitePreflight(passStats);
+  await Promise.all(
+    (layoutPlan?.materials ?? []).map(async (material, originalIndex) => {
+      const fileName = `${material.filename}.pdf`;
+      const filePath = path.join(orderOutputDir, fileName);
 
-      if (preflight.failed && pass + 1 < maxAttempts) {
-        smartRetryTriggered = true;
-        continue;
-      }
-      break;
-    }
+      await rasterizeSemaphore?.acquire();
+      try {
+        let details: Record<string, unknown> = {};
 
-    return {
-      ...(lastStats ?? {}),
-      mode: "strict_final_near_white",
-      iterations_requested: safeWhiteFinalIterations,
-      iterations_cap: maxAttempts,
-      iterations_used: iterationsUsed,
-      smart_retry_enabled: true,
-      smart_retry_triggered: smartRetryTriggered,
-      preflight_failed_after_retry: preflight.failed,
-      preflight_residual_strict_white_pixels: preflight.strict,
-      preflight_residual_aggressive_white_pixels: preflight.aggressive,
-      preflight_residual_strict_low_alpha_white_pixels: preflight.strictLowAlpha,
-      preflight_residual_aggressive_low_alpha_white_pixels: preflight.aggressiveLowAlpha,
-    };
-  };
-
-  for (const material of layoutPlan?.materials ?? []) {
-    const fileName = `${material.filename}.pdf`;
-    const filePath = path.join(orderOutputDir, fileName);
-
-    try {
-      let details: Record<string, unknown> = {};
-      let whiteRecolorAppliedEarly = false;
-
-      if (material.type === "poster") {
-        const sourceUrl = String(material.sourceUrl ?? "").trim();
-        const cachedSourceDetails = await tryCopyPosterSourceFromCache({
-          sourceUrl,
-          outPath: filePath,
-          posterSourcePathByUrl,
-        });
-
-        details =
-          cachedSourceDetails ??
-          (await downloadFile({
-            url: material.sourceUrl,
+        if (material.type === "poster") {
+          const sourceUrl = String(material.sourceUrl ?? "").trim();
+          const cachedSourceDetails = await tryCopyPosterSourceFromCache({
+            sourceUrl,
             outPath: filePath,
-            sourceRequestOptions: safeSourceRequestOptions,
-          }));
-
-        if (replaceWhiteWithOffWhite) {
-          details.white_recolor = await applyWhiteRecolorWithIterations({
-            filePath,
-            stripSoftMask: true,
+            posterSourcePathByUrl,
           });
-          whiteRecolorAppliedEarly = true;
-        }
 
-        if (layoutPlan?.qr?.shouldGenerate && layoutPlan?.qr?.url) {
-          const qrPlacement = resolveQrPlacement(material.format, qrPlacementByFormat);
-          if (!qrPlacement) {
-            warnings.push(
-              `QR для формату ${material.format || "N/A"} не вбудовано: не задані параметри розміщення.`,
-            );
-            details.qr = { embedded: false, reason: "placement_not_configured" };
-          } else {
-            details.qr = await embedQrIntoPosterPdf({
-              posterPath: filePath,
-              qrUrl: layoutPlan.qr.url,
-              placement: qrPlacement,
-              qrHex: offWhiteHex,
+          details =
+            cachedSourceDetails ??
+            (await downloadFile({
+              url: material.sourceUrl,
+              outPath: filePath,
+              sourceRequestOptions: safeSourceRequestOptions,
+            }));
+
+          if (replaceWhiteWithOffWhite) {
+            const combined = await applyWhiteRecolor({
+              filePath,
+              stripSoftMask: true,
             });
+            details.white_recolor = combined.mainStats;
+            if (combined.finalStats) {
+              details.white_recolor_final = combined.finalStats;
+            }
           }
-        }
-      } else if (material.type === "engraving") {
-        details = await createEngravingPdf({
-          text: material.text || "",
-          format: material.format,
-          outPath: filePath,
-          fontSet: fontSet!,
-          emojiRuntime,
-          warnings,
-        });
-      } else if (material.type === "sticker") {
-        details = await createStickerPdf({
-          text: material.text || "",
-          outPath: filePath,
-          fontSet: fontSet!,
-          stickerSizeMm,
-          emojiRuntime,
-          warnings,
-        });
-      } else {
-        throw new Error(`Unsupported material type: ${(material as { type: string }).type}`);
-      }
 
-      if (replaceWhiteWithOffWhite && !whiteRecolorAppliedEarly) {
-        details.white_recolor = await applyWhiteRecolorWithIterations({
-          filePath,
-          stripSoftMask: false,
-        });
-      }
-
-      if (replaceWhiteWithOffWhite) {
-        const whiteRecolorStats =
-          details.white_recolor && typeof details.white_recolor === "object"
-            ? (details.white_recolor as Record<string, unknown>)
-            : null;
-        const shouldRunFinalCleanup =
-          material.type === "poster" ||
-          !whiteFinalEnforce ||
-          shouldRunStrictFinalWhiteCleanup(whiteRecolorStats);
-
-        if (shouldRunFinalCleanup) {
-          details.white_recolor_final = await applyStrictFinalWhiteCleanup({
-            filePath,
-            stripSoftMask: material.type === "poster",
+          if (layoutPlan?.qr?.shouldGenerate && layoutPlan?.qr?.url) {
+            const qrPlacement = resolveQrPlacement(material.format, qrPlacementByFormat);
+            if (!qrPlacement) {
+              warnings.push(
+                `QR для формату ${material.format || "N/A"} не вбудовано: не задані параметри розміщення.`,
+              );
+              details.qr = { embedded: false, reason: "placement_not_configured" };
+            } else {
+              details.qr = await embedQrIntoPosterPdf({
+                posterPath: filePath,
+                qrUrl: layoutPlan.qr.url,
+                placement: qrPlacement,
+                qrHex: offWhiteHex,
+              });
+            }
+          }
+        } else if (material.type === "engraving") {
+          details = await createEngravingPdf({
+            text: material.text || "",
+            format: material.format,
+            outPath: filePath,
+            fontSet: fontSet!,
+            emojiRuntime,
+            warnings,
+          });
+        } else if (material.type === "sticker") {
+          details = await createStickerPdf({
+            text: material.text || "",
+            outPath: filePath,
+            fontSet: fontSet!,
+            stickerSizeMm,
+            emojiRuntime,
+            warnings,
           });
         } else {
-          details.white_recolor_final = {
-            applied: false,
-            reason: "skipped_clean_after_early_pass",
-            residual_strict_white_pixels: 0,
-            residual_aggressive_white_pixels: 0,
-          };
+          throw new Error(`Unsupported material type: ${(material as { type: string }).type}`);
         }
+
+        if (replaceWhiteWithOffWhite && material.type !== "poster") {
+          const combined = await applyWhiteRecolor({
+            filePath,
+            stripSoftMask: false,
+          });
+          details.white_recolor = combined.mainStats;
+          if (combined.finalStats) {
+            details.white_recolor_final = combined.finalStats;
+          }
+        }
+
+        const shouldConvertCmykNow =
+          normalizedColorSpace === "CMYK" &&
+          !(material.type === "poster" && Boolean(deferPosterCmykConversion));
+
+        if (shouldConvertCmykNow) {
+          await convertPdfToCmykInPlace(filePath, Boolean(cmykLossless));
+        }
+
+        details.color_space = shouldConvertCmykNow ? normalizedColorSpace : "RGB";
+        if (normalizedColorSpace === "CMYK" && material.type === "poster" && !shouldConvertCmykNow) {
+          details.cmyk_deferred = true;
+        }
+
+        materialResults.push({
+          originalIndex,
+          kind: "generated",
+          entry: { type: material.type, filename: fileName, path: filePath, details },
+        });
+      } catch (error) {
+        materialResults.push({
+          originalIndex,
+          kind: "failed",
+          entry: {
+            type: material.type,
+            filename: fileName,
+            path: filePath,
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      } finally {
+        rasterizeSemaphore?.release();
       }
+    }),
+  );
 
-      const shouldConvertCmykNow =
-        normalizedColorSpace === "CMYK" &&
-        !(material.type === "poster" && Boolean(deferPosterCmykConversion));
-
-      if (shouldConvertCmykNow) {
-        await convertPdfToCmykInPlace(filePath, Boolean(cmykLossless));
-      }
-
-      details.color_space = shouldConvertCmykNow ? normalizedColorSpace : "RGB";
-      if (normalizedColorSpace === "CMYK" && material.type === "poster" && !shouldConvertCmykNow) {
-        details.cmyk_deferred = true;
-      }
-
-      generated.push({ type: material.type, filename: fileName, path: filePath, details });
-    } catch (error) {
-      failed.push({
-        type: material.type,
-        filename: fileName,
-        path: filePath,
-        message: error instanceof Error ? error.message : String(error),
-      });
+  materialResults.sort((a, b) => a.originalIndex - b.originalIndex);
+  for (const r of materialResults) {
+    if (r.kind === "generated") {
+      generated.push(r.entry);
+    } else {
+      failed.push(r.entry);
     }
   }
 
@@ -3205,7 +3242,7 @@ export async function enforceOffWhiteInPdf(input: EnforceOffWhiteInput): Promise
   if (profile === "aggressive") {
     return replaceWhiteInPdfWithOffWhiteInPlace({
       filePath: input.filePath,
-      offWhiteHex: input.offWhiteHex ?? "FFFEFA",
+      offWhiteHex: input.offWhiteHex ?? "F7F6F2",
       threshold: 252,
       maxSaturation: 0.03,
       dpi: input.rasterizeDpi ?? 300,
@@ -3227,7 +3264,7 @@ export async function enforceOffWhiteInPdf(input: EnforceOffWhiteInput): Promise
 
   return replaceWhiteInPdfWithOffWhiteInPlace({
     filePath: input.filePath,
-    offWhiteHex: input.offWhiteHex ?? "FFFEFA",
+    offWhiteHex: input.offWhiteHex ?? "F7F6F2",
     threshold: 254,
     maxSaturation: 0.25,
     dpi: input.rasterizeDpi ?? 300,

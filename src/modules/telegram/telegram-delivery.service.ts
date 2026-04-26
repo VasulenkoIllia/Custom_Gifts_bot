@@ -248,11 +248,13 @@ function buildDeliveryKey(input: {
     },
     pipelineMetrics: input.pipelineMetrics
       ? {
-          pipelineProfile: String(input.pipelineMetrics.pipelineProfile ?? "").trim(),
-          pipelineReason: String(input.pipelineMetrics.pipelineReason ?? "").trim(),
+          rasterizeDpi: Number(input.pipelineMetrics.rasterizeDpi ?? 0),
           finalWhiteStrictPixels: Number(input.pipelineMetrics.finalWhiteStrictPixels ?? 0),
           finalWhiteAggressivePixels: Number(
             input.pipelineMetrics.finalWhiteAggressivePixels ?? 0,
+          ),
+          finalWhiteCorrectedPixels: Number(
+            input.pipelineMetrics.finalWhiteCorrectedPixels ?? 0,
           ),
         }
       : null,

@@ -401,9 +401,9 @@ async function main(): Promise<void> {
     stickerSizeMm: config.pdfStickerSizeMm,
     offWhiteHex: config.pdfOffWhiteHex,
     rasterizeDpi: config.pdfRasterizeDpi,
-    rasterizeDpiStandard: config.pdfRasterizeDpiStandard,
-    rasterizeDpiQualitySafe: config.pdfRasterizeDpiQualitySafe,
-    qualitySafeProfile: Boolean(config.pdfWhiteQualitySafeProfile),
+    highDetailDpi: config.pdfHighDetailDpi,
+    highDetailSkus: config.pdfHighDetailSkus,
+    rasterizeConcurrency: config.rasterizeConcurrency,
     cmykLossless: Boolean(config.pdfCmykLossless),
     spotifyRequestOptions: {
       timeoutMs: config.spotifyRequestTimeoutMs,

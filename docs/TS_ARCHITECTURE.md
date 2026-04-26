@@ -230,19 +230,17 @@ Bootstrap rule:
 - RAM: `80-200 MB`
 
 PDF-стадія:
-- A5 при `600 DPI` може давати пік RAM приблизно `250-500 MB` на один активний PDF-pass
-- A4 при `600 DPI` може давати пік RAM приблизно `450-900 MB` на один активний PDF-pass
+- A5 при `800 DPI` може давати пік RAM приблизно `300-600 MB` на один активний PDF-pass
+- A4 при `800 DPI` може давати пік RAM приблизно `500-1000 MB` на один активний PDF-pass
+- high-detail SKU на `1200 DPI` дає пропорційно вищі піки
 - кілька проходів recolor + CMYK + Ghostscript можуть піднімати піки ще вище
-- QR і Spotify коди рендеруються на 600 DPI-еквіваленті цільового розміру (не на дефолтних ~100px чи 640px), усуваючи upscaling артефакти
-- final white cleanup тепер працює на тій же DPI, що й основна rasterization, а не на hardcoded 300
+- QR і Spotify коди рендеруються на 600 DPI-еквіваленті цільового фізичного розміру (не на дефолтних ~100px чи 640px), усуваючи upscaling артефакти
+- final white cleanup працює на тій же DPI, що й основна rasterization
 
 Практичне правило:
-- на одному worker не варто паралелити більше `1` важкого PDF job без окремого stress-тесту;
-- для невеликого production краще мати:
-  - `1` receiver process
-  - `1` order worker
-  - `1` PDF worker з concurrency `1`
-  - `1` reaction worker
+- `ORDER_QUEUE_CONCURRENCY=2` дозволяє обробляти 2 замовлення паралельно;
+- `RASTERIZE_CONCURRENCY=2` обмежує одночасні Ghostscript процеси (≈3 ядра з 4 у контейнері);
+- при `ORDER_QUEUE_CONCURRENCY=2` + `RASTERIZE_CONCURRENCY=2` пікове навантаження RAM: до `1-2 GB` при A4 high-detail orders.
 
 ## 13. Вузькі місця
 - Ghostscript і rasterization PDF.

@@ -1,5 +1,11 @@
 # White Quality-Safe Integration (2026-04-21)
 
+> **АРХІВ (2026-04-26):** quality-safe профіль та auto-router видалено. Замість них діє детермінований SKU-based DPI routing: high-detail SKU → `RASTERIZE_DPI_HIGH_DETAIL` (1200), решта → `RASTERIZE_DPI` (800). Env-змінні `PDF_WHITE_QUALITY_SAFE_PROFILE`, `PDF_PROFILE_AUTO_ROUTER*`, `RASTERIZE_DPI_STANDARD`, `RASTERIZE_DPI_QUALITY_SAFE`, `PDF_FINAL_PREFLIGHT_RETRY_*` більше не підтримуються.
+>
+> **UPDATE (2026-04-26):** default pipeline більше не запускає регулярний `white_recolor_final`. Основний white-pass виконується один раз, далі після CMYK-конверсії запускається residual postcheck, і тільки за потреби виконується aggressive retry-pass.
+>
+> Поточна production-схема описана в [docs/CURRENT_PDF_PIPELINE.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/CURRENT_PDF_PIPELINE.md). Розділи нижче залишені як історичний контекст і не є актуальним deploy-рецептом.
+
 Документ фіксує інтеграцію друк-підходу (H6/H3 quality profile) в основний pipeline без зміни бізнес-правил order/Qr/CRM routing.
 
 ## Що інтегровано

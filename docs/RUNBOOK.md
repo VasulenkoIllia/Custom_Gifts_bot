@@ -17,6 +17,13 @@
 4. Переконатись, що PostgreSQL доступний за `DATABASE_URL`.
 5. Переконатись, що в PostgreSQL є права на створення/оновлення таблиць
    (`idempotency_keys`, `telegram_message_map`, `order_workflow_state`, `dead_letters`).
+6. Перевірити актуальний PDF pipeline за [docs/CURRENT_PDF_PIPELINE.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/CURRENT_PDF_PIPELINE.md):
+   - `OFFWHITE_HEX=F7F6F2`
+   - `RASTERIZE_DPI=800`
+   - `RASTERIZE_DPI_HIGH_DETAIL=1200`
+   - `ORDER_QUEUE_CONCURRENCY=2`
+   - `RASTERIZE_CONCURRENCY=2`
+   - `PDF_HIGH_DETAIL_SKUS_PATH=config/business-rules/high-detail-skus.json`
 
 ## 1.1 Поточний порядок локального запуску
 Поточний рекомендований порядок:
@@ -202,6 +209,7 @@ PGPASSWORD=custom_gifts psql -h 127.0.0.1 -p 5433 -U custom_gifts -d custom_gift
    - `TELEGRAM_BOT_TOKEN`
    - `KEYCRM_WEBHOOK_SECRET`
    - `TELEGRAM_REACTION_SECRET_TOKEN`
+   - `PDF_HIGH_DETAIL_SKUS_PATH` вказує на існуючий non-empty JSON array
 3. Оновити код на сервері:
    - `git fetch --all --prune`
    - `git checkout main`
@@ -297,10 +305,10 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
    - в processing і ops chat приходить `Не вдалося сформувати PDF`;
    - запису в `dead_letters` бути не повинно.
 10. Для order з проблемним білим фоном:
-   - poster має проходити legacy-aggressive white cleanup;
-   - залишковий чистий білий не повинен лишатися;
-   - обробка може бути довша через додаткові ітерації recolor/final cleanup;
-   - final cleanup тепер працює на конфігурованій DPI (600 за замовчуванням), а не на hardcoded 300, що гарантує однакову якість на останньому пасі pipeline.
+   - poster проходить один основний white cleanup pass на ефективному DPI замовлення;
+   - після CMYK конверсії виконується residual near-white postcheck;
+   - якщо residual перевищує поріг — один aggressive retry pass, після якого повторна CMYK конверсія;
+   - у Telegram caption відображається `corrected=<N>` — кількість пікселів, виправлених finalPreflight.
 11. Для preview-повідомлення в `ОБРОБКА`:
    - перше preview має містити блок `Кількість` у форматі `<SKU> × N шт`;
    - в кількість входять базові товари (позиції без `_parentKey`);

@@ -550,13 +550,13 @@ test("order worker hides QR url in caption payload when QR was not embedded", as
   assert.equal(receivedQrUrl, "null");
 });
 
-test("order worker forwards pipeline and final white metrics into telegram payload", async () => {
+test("order worker forwards rasterize DPI and final white metrics into telegram payload", async () => {
   let receivedPipelineMetrics:
     | {
-        pipelineProfile: string;
-        pipelineReason?: string | null;
+        rasterizeDpi: number;
         finalWhiteStrictPixels: number;
         finalWhiteAggressivePixels: number;
+        finalWhiteCorrectedPixels: number;
         orderProcessingDurationMs: number;
       }
     | null = null;
@@ -606,8 +606,7 @@ test("order worker forwards pipeline and final white metrics into telegram paylo
         output_dir: "/tmp",
         color_space: "CMYK" as const,
         warnings: [],
-        pipeline_profile: "quality_safe" as const,
-        pipeline_profile_reason: "auto_risk",
+        rasterize_dpi: 800,
         generated: [
           {
             type: "poster",
@@ -617,6 +616,7 @@ test("order worker forwards pipeline and final white metrics into telegram paylo
               final_preflight: {
                 residual_strict_white_pixels: 0,
                 residual_aggressive_white_pixels: 0,
+                corrected_pixels: 12,
               },
             },
           },
@@ -627,10 +627,10 @@ test("order worker forwards pipeline and final white metrics into telegram paylo
     telegramDeliveryService: {
       sendOrderMaterials: async (input: {
         pipelineMetrics?: {
-          pipelineProfile: string;
-          pipelineReason?: string | null;
+          rasterizeDpi: number;
           finalWhiteStrictPixels: number;
           finalWhiteAggressivePixels: number;
+          finalWhiteCorrectedPixels: number;
           orderProcessingDurationMs: number;
         } | null;
       }) => {
@@ -661,17 +661,17 @@ test("order worker forwards pipeline and final white metrics into telegram paylo
   });
 
   const metrics = receivedPipelineMetrics as {
-    pipelineProfile: string;
-    pipelineReason?: string | null;
+    rasterizeDpi: number;
     finalWhiteStrictPixels: number;
     finalWhiteAggressivePixels: number;
+    finalWhiteCorrectedPixels: number;
     orderProcessingDurationMs: number;
   } | null;
   assert.ok(metrics);
-  assert.equal(metrics.pipelineProfile, "quality_safe");
-  assert.equal(metrics.pipelineReason, "auto_risk");
+  assert.equal(metrics.rasterizeDpi, 800);
   assert.equal(metrics.finalWhiteStrictPixels, 0);
   assert.equal(metrics.finalWhiteAggressivePixels, 0);
+  assert.equal(metrics.finalWhiteCorrectedPixels, 12);
   assert.ok(Number.isFinite(metrics.orderProcessingDurationMs));
   assert.ok(metrics.orderProcessingDurationMs >= 0);
 });

@@ -1,13 +1,39 @@
 # Server Deploy: cgbot.workflo.space
 
 ## 1. Files to upload
-- repo code
-- `docker-compose.prod.yml`
-- `.env.production` built from [/.env.server.cgbot](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/.env.server.cgbot)
 
-Примітка:
-- runtime image already contains `tzdata`, `ghostscript`, app `dist/` and operational `dist/scripts/*`;
-- `receiver`, `order-worker`, `reaction-worker` run with `init: true`, so child processes from PDF pipeline are reaped correctly.
+Все що потрібно — в репозиторії. Окремих файлів завантажувати не треба.
+
+На сервері потрібен лише один приватний файл поза Git:
+- `.env.production` — створити з треканого шаблону [/.env.production.example](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/.env.production.example) і заповнити реальними production secrets на сервері.
+- Локальні файли `.env.*`, крім прикладів, ігноруються через `.gitignore`; не комітити server-specific env із токенами або webhook secrets.
+
+Примітки:
+- `config/business-rules/` (включно з `high-detail-skus.json`) вбудовані в Docker image через `COPY config ./config` — монтувати або завантажувати окремо не потрібно.
+- `assets/fonts/Caveat-VariableFont_wght.ttf` також вбудований у Docker image.
+- Runtime image містить `tzdata`, `ghostscript`, `dist/` і `dist/scripts/*`.
+- `receiver`, `order-worker`, `reaction-worker` запускаються з `init: true` — child-процеси GhostScript коректно збираються після завершення.
+- Деталі PDF pipeline: [docs/CURRENT_PDF_PIPELINE.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/CURRENT_PDF_PIPELINE.md).
+
+## 1.1 Актуальні значення PDF pipeline
+
+```bash
+# DPI routing: SKU з high-detail-skus.json → 1200, решта → 800
+RASTERIZE_DPI=800
+RASTERIZE_DPI_HIGH_DETAIL=1200
+PDF_HIGH_DETAIL_SKUS_PATH=config/business-rules/high-detail-skus.json
+
+# Паралельність: 2 замовлення одночасно, ліміт 2 GhostScript процеси (~3 ядра з 4)
+ORDER_QUEUE_CONCURRENCY=2
+RASTERIZE_CONCURRENCY=2
+
+# Колір і якість
+PDF_COLOR_SPACE=CMYK
+OFFWHITE_HEX=F7F6F2
+PDF_FINAL_PREFLIGHT_MEASURE_DPI=200
+```
+
+Якщо `PDF_HIGH_DETAIL_SKUS_PATH` відсутній, нечитабельний або порожній — сервіс не стартує (fail-fast).
 
 ## 2. Traefik assumptions
 - Traefik already runs on the server
@@ -71,7 +97,7 @@ docker compose -f docker-compose.prod.yml --env-file .env.production exec -T pos
 
 ## 4. Webhooks
 - KeyCRM:
-  `https://cgbot.workflo.space/webhook/keycrm?secret=vp5qJ_on7988BYzoKKNl3dKiaqmL9RDg`
+  `https://cgbot.workflo.space/webhook/keycrm?secret=<KEYCRM_WEBHOOK_SECRET>`
 - Telegram:
   `https://cgbot.workflo.space/webhook/telegram`
 
@@ -81,7 +107,7 @@ curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://cgbot.workflo.space/webhook/telegram",
-    "secret_token": "c_q8ysmx7XbUfrCP2FfQsSPU1Z7K9ILO",
+    "secret_token": "<TELEGRAM_REACTION_SECRET_TOKEN>",
     "allowed_updates": ["message_reaction", "message_reaction_count"],
     "drop_pending_updates": true
   }'
@@ -108,6 +134,17 @@ docker compose -f docker-compose.prod.yml --env-file .env.production exec receiv
   npm run test:order:trigger -- --order-id=29068
 ```
 
+PDF pipeline validation examples:
+```bash
+# standard SKU order should log rasterizeDpi=800 and Telegram caption DPI: 800
+docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver \
+  npm run test:order:trigger -- --order-id=<STANDARD_ORDER_ID>
+
+# high-detail SKU order should log rasterizeDpi=1200 and Telegram caption DPI: 1200
+docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver \
+  npm run test:order:trigger -- --order-id=<HIGH_DETAIL_ORDER_ID>
+```
+
 Snapshot statuses before tests:
 ```bash
 docker compose -f docker-compose.prod.yml --env-file .env.production exec receiver \
@@ -129,3 +166,14 @@ Default retention values from `.env.production`:
 - `OUTPUT_RETENTION_HOURS=168`
 - `TEMP_RETENTION_HOURS=24`
 - `CLEANUP_INTERVAL_MS=3600000`
+
+## 7. Post-deploy PDF checks
+
+After the first server test orders, verify:
+
+- `order-worker` logs contain `pdf_pipeline_started` with `rasterizeDpi=800` for standard SKU orders.
+- `order-worker` logs contain `pdf_pipeline_started` with `rasterizeDpi=1200` for high-detail SKU orders.
+- Telegram caption contains `DPI`, `strict`, `agg`, `corrected`, and `Час опрацювання`.
+- Normal orders should usually have `corrected=0` with `OFFWHITE_HEX=F7F6F2`.
+- `pdf_pipeline_finished.finalPreflightCorrectedPixels` should stay `0` or close to `0` on most orders.
+- Under `ORDER_QUEUE_CONCURRENCY=2`, `gs` processes should not exceed the effective `RASTERIZE_CONCURRENCY=2` cap during PDF-heavy phases.

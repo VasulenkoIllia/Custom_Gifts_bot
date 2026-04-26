@@ -15,6 +15,8 @@ TypeScript-сервіс для повного циклу обробки замо
 
 Сервіс приймає подію `order.change_order_status` з KeyCRM, обробляє замовлення на статусі `Матеріали = 20`, формує файли для друку і відправляє їх у Telegram. Далі оператор ставить реакцію під PDF-повідомленням, після чого сервіс змінює CRM-статус і пересилає комплект у наступну робочу гілку.
 
+Актуальна схема обробки фото/PDF зафіксована в [docs/CURRENT_PDF_PIPELINE.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/CURRENT_PDF_PIPELINE.md).
+
 ## Простий порядок обробки замовлення
 
 1. KeyCRM надсилає webhook про зміну статусу.
@@ -74,35 +76,26 @@ TypeScript-сервіс для повного циклу обробки замо
     - якщо `preview` немає -> CRM `40 / Без файлу`
   - `немає тексту для engraving/sticker` -> CRM `40 / Без файлу`
   - `_tib_design_link_1` є, але CDN дає `403/404` -> CRM статус не змінюється, у Telegram іде alert `Не вдалося сформувати PDF`
-- white cleanup працює в режимі `Smart retry`:
-  - перший pass обов'язковий;
-  - другий pass виконується тільки якщо preflight показав residual near-white;
-  - надлишкові повторні проходи не виконуються;
-  - final white cleanup працює на активному route DPI (`RASTERIZE_DPI_STANDARD` для `STANDARD`, `RASTERIZE_DPI_QUALITY_SAFE` для `QUALITY_SAFE`).
+- white cleanup працює в conditional retry режимі:
+  - основний white-pass обов'язковий і виконується один раз;
+  - регулярний `white_recolor_final` не запускається у default path;
+  - фінальний residual near-white postcheck виконується після CMYK-конверсії;
+  - повторний aggressive white-pass запускається тільки якщо фінальний postcheck показав residual near-white вище порога;
   - у `PDF_COLOR_SPACE=CMYK` фінальний файл завжди конвертується в CMYK;
-  - порядок кроків зафіксовано як `final white cleanup -> CMYK conversion`, щоб останній white-pass не повертав PDF у `RGB`;
-  - після CMYK конверсії виконується residual near-white postcheck і, за потреби, один додатковий aggressive-pass з повторною CMYK конверсією;
   - деталі реалізації і валідація:
     - [docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_SMART_RETRY_VALIDATION_2026-04-18.md)
     - [docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_CMYK_POSTCHECK_VALIDATION_2026-04-20.md)
-    - [docs/WHITE_QUALITY_SAFE_INTEGRATION_2026-04-21.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/WHITE_QUALITY_SAFE_INTEGRATION_2026-04-21.md)
-- додатково доступний `quality-safe` режим (для макетів на кшталт 29658):
-  - вмикається через `PDF_WHITE_QUALITY_SAFE_PROFILE=true`;
-  - використовує strict white-pass (`threshold`), без final white pass;
-  - вмикає один pass у `RASTERIZE_DPI_QUALITY_SAFE` (або fallback `RASTERIZE_DPI`) і зберігає `white=0`;
-  - для мінімізації артефактів CMYK-конверсії можна вмикати `PDF_CMYK_LOSSLESS=true` (Flate для color/gray image, без downsample);
-  - рекомендований набір для mixed mode: `RASTERIZE_DPI_STANDARD=800`, `RASTERIZE_DPI_QUALITY_SAFE=1000`, `PDF_PROFILE_AUTO_ROUTER=true`, `PDF_WHITE_QUALITY_SAFE_PROFILE=false`.
-- для автоматичного вибору профілю доступний auto-router:
-  - `PDF_PROFILE_AUTO_ROUTER=true`;
-  - preflight source PDF робиться в `PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI` (default `300`);
-  - якщо ризик (residual aggressive near-white) >= `PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS` і score >= `PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD`, замовлення йде через `QUALITY_SAFE`, інакше через `STANDARD`.
+- SKU-based DPI routing:
+  - якщо будь-який poster-матеріал замовлення має SKU з `PDF_HIGH_DETAIL_SKUS_PATH` → `RASTERIZE_DPI_HIGH_DETAIL` (default 1200);
+  - всі інші замовлення → `RASTERIZE_DPI` (default 800);
+  - всі матеріали одного замовлення растеризуються з єдиним DPI (немає змішаного режиму).
+- для мінімізації артефактів CMYK-конверсії можна вмикати `PDF_CMYK_LOSSLESS=true` (Flate для color/gray image, без downsample).
 - для прискорення `final preflight` без зміни фінального DPI рендера:
-  - `PDF_FINAL_PREFLIGHT_MEASURE_DPI` (default `450`, але не вище активного route DPI) використовується тільки для postcheck-вимірювання residual near-white;
-  - `PDF_FINAL_PREFLIGHT_RETRY_STRICT_PIXELS` (default `64`) і `PDF_FINAL_PREFLIGHT_RETRY_AGGRESSIVE_PIXELS` (default `256`) задають мінімум residual pixels, після якого запускається дорогий retry-pass.
-- у Telegram caption додано 3 технічні метрики:
-  - який профіль застосовано (`STANDARD` / `QUALITY_SAFE`);
-  - фінальні white-пікселі після preflight (`strict`, `aggressive`).
-  - час опрацювання одного замовлення (`Час опрацювання: <...>`).
+  - `PDF_FINAL_PREFLIGHT_MEASURE_DPI` (default `200`) використовується тільки для postcheck-вимірювання residual near-white.
+- у Telegram caption додаються технічні метрики:
+  - `DPI: <N>` — з яким DPI оброблено замовлення;
+  - `Білий (px): strict=<N> | agg=<N> | corrected=<N>` — фінальні white-пікселі після preflight і кількість пікселів, які довелося виправити у finalPreflight;
+  - `Час опрацювання: <...>` — час опрацювання одного замовлення.
 - QR і Spotify code рендеруються на 600 DPI-еквіваленті цільового фізичного розміру (не на дефолтному ~100px для QR чи 640px для Spotify API):
   - A5 QR: ~100px → 472px
   - A4 QR: ~100px → 709px

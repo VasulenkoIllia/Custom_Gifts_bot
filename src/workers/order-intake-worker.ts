@@ -274,20 +274,15 @@ function buildPipelineMetricsForTelegram(
   pdfResult: PdfPipelineResult,
   orderProcessingDurationMs: number,
 ): {
-  pipelineProfile: "standard" | "quality_safe";
-  pipelineReason: string | null;
+  rasterizeDpi: number;
   finalWhiteStrictPixels: number;
   finalWhiteAggressivePixels: number;
+  finalWhiteCorrectedPixels: number;
   orderProcessingDurationMs: number;
 } {
-  const profile =
-    String(pdfResult.pipeline_profile ?? "").trim().toLowerCase() === "quality_safe"
-      ? "quality_safe"
-      : "standard";
-  const reason = String(pdfResult.pipeline_profile_reason ?? "").trim() || null;
-
   let strictPixels = 0;
   let aggressivePixels = 0;
+  let correctedPixels = 0;
 
   for (const generatedFile of pdfResult.generated) {
     const details =
@@ -313,13 +308,14 @@ function buildPipelineMetricsForTelegram(
 
     strictPixels += readNonNegativeInt(source.residual_strict_white_pixels);
     aggressivePixels += readNonNegativeInt(source.residual_aggressive_white_pixels);
+    correctedPixels += readNonNegativeInt(source.corrected_pixels);
   }
 
   return {
-    pipelineProfile: profile,
-    pipelineReason: reason,
+    rasterizeDpi: Math.max(0, Math.floor(Number(pdfResult.rasterize_dpi ?? 0))),
     finalWhiteStrictPixels: strictPixels,
     finalWhiteAggressivePixels: aggressivePixels,
+    finalWhiteCorrectedPixels: correctedPixels,
     orderProcessingDurationMs: Math.max(0, Math.floor(orderProcessingDurationMs)),
   };
 }

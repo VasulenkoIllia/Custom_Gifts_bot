@@ -3,6 +3,25 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseAppRole } from "./app-role";
 
+function loadHighDetailSkus(filePath: string): string[] {
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error("expected a JSON array");
+    }
+
+    const skus = [...new Set(parsed.map((item) => String(item ?? "").trim()).filter(Boolean))];
+    if (skus.length === 0) {
+      throw new Error("SKU list is empty");
+    }
+    return skus;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`PDF_HIGH_DETAIL_SKUS_PATH is invalid (${filePath}): ${reason}`);
+  }
+}
+
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -79,11 +98,13 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
       ? defaultAppleEmojiAssetsDir
       : "";
   const baseRasterizeDpi = parsePositiveInteger(env.RASTERIZE_DPI, 800);
-  const standardRasterizeDpi = parsePositiveInteger(env.RASTERIZE_DPI_STANDARD, baseRasterizeDpi);
-  const qualitySafeRasterizeDpi = parsePositiveInteger(
-    env.RASTERIZE_DPI_QUALITY_SAFE,
-    baseRasterizeDpi,
+  const highDetailDpi = parsePositiveInteger(env.RASTERIZE_DPI_HIGH_DETAIL, 1200);
+
+  const highDetailSkusPath = path.resolve(
+    process.cwd(),
+    String(env.PDF_HIGH_DETAIL_SKUS_PATH ?? "config/business-rules/high-detail-skus.json"),
   );
+  const pdfHighDetailSkus = loadHighDetailSkus(highDetailSkusPath);
 
   return {
     appRole: parseAppRole(env.APP_ROLE),
@@ -208,37 +229,16 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     appleEmojiAssetsDir: resolvedAppleEmojiAssetsDir,
     pdfColorSpace: parseColorSpace(env.PDF_COLOR_SPACE),
     pdfStickerSizeMm: parsePositiveFloat(env.STICKER_SIZE_MM, 100),
-    pdfOffWhiteHex: String(env.OFFWHITE_HEX ?? "FFFEFA")
+    pdfOffWhiteHex: String(env.OFFWHITE_HEX ?? "F7F6F2")
       .trim()
       .replace(/^#/, "")
       .toUpperCase(),
     pdfRasterizeDpi: baseRasterizeDpi,
-    pdfRasterizeDpiStandard: standardRasterizeDpi,
-    pdfRasterizeDpiQualitySafe: qualitySafeRasterizeDpi,
-    pdfWhiteQualitySafeProfile: parseBoolean(env.PDF_WHITE_QUALITY_SAFE_PROFILE, false),
+    pdfHighDetailDpi: highDetailDpi,
+    pdfHighDetailSkus: pdfHighDetailSkus,
     pdfCmykLossless: parseBoolean(env.PDF_CMYK_LOSSLESS, false),
-    pdfProfileAutoRouter: parseBoolean(env.PDF_PROFILE_AUTO_ROUTER, false),
-    pdfProfileAutoRouterPreflightDpi: parsePositiveInteger(
-      env.PDF_PROFILE_AUTO_ROUTER_PREFLIGHT_DPI,
-      300,
-    ),
-    pdfProfileAutoRouterRiskThreshold: parsePositiveInteger(
-      env.PDF_PROFILE_AUTO_ROUTER_RISK_THRESHOLD,
-      2,
-    ),
-    pdfProfileAutoRouterAggressiveWhitePixels: parsePositiveInteger(
-      env.PDF_PROFILE_AUTO_ROUTER_AGGRESSIVE_WHITE_PIXELS,
-      150_000,
-    ),
-    pdfFinalPreflightMeasureDpi: parsePositiveInteger(env.PDF_FINAL_PREFLIGHT_MEASURE_DPI, 450),
-    pdfFinalPreflightRetryStrictPixels: parseNonNegativeInteger(
-      env.PDF_FINAL_PREFLIGHT_RETRY_STRICT_PIXELS,
-      64,
-    ),
-    pdfFinalPreflightRetryAggressivePixels: parseNonNegativeInteger(
-      env.PDF_FINAL_PREFLIGHT_RETRY_AGGRESSIVE_PIXELS,
-      256,
-    ),
+    pdfFinalPreflightMeasureDpi: parsePositiveInteger(env.PDF_FINAL_PREFLIGHT_MEASURE_DPI, 200),
+    rasterizeConcurrency: parsePositiveInteger(env.RASTERIZE_CONCURRENCY, 3),
     qrA5RightMm: parsePositiveFloat(env.QR_A5_RIGHT_MM, 10),
     qrA5BottomMm: parsePositiveFloat(env.QR_A5_BOTTOM_MM, 10),
     qrA5SizeMm: parsePositiveFloat(env.QR_A5_SIZE_MM, 20),
