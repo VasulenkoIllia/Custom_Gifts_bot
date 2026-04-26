@@ -69,7 +69,6 @@ services:
 
   order-worker:
     <<: *app-base
-    container_name: cgbot-prod-order-worker
     environment:
       APP_ROLE: order_worker
       TZ: ${TZ:-Europe/Kyiv}
@@ -80,8 +79,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4'
-          memory: 8g
+          cpus: '2'
+          memory: 4g
 
   reaction-worker:
     <<: *app-base
