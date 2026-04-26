@@ -76,11 +76,6 @@ services:
     volumes:
       - cgbot_prod_output_data:/app/storage/files/materials
       - cgbot_prod_temp_data:/app/storage/temp
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 4g
 
   reaction-worker:
     <<: *app-base
