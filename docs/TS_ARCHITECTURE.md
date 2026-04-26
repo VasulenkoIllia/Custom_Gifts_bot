@@ -237,10 +237,14 @@ PDF-стадія:
 - QR і Spotify коди рендеруються на 600 DPI-еквіваленті цільового фізичного розміру (не на дефолтних ~100px чи 640px), усуваючи upscaling артефакти
 - final white cleanup працює на тій же DPI, що й основна rasterization
 
-Практичне правило:
-- `ORDER_QUEUE_CONCURRENCY=2` дозволяє обробляти 2 замовлення паралельно;
-- `RASTERIZE_CONCURRENCY=2` обмежує одночасні Ghostscript процеси (≈3 ядра з 4 у контейнері);
-- при `ORDER_QUEUE_CONCURRENCY=2` + `RASTERIZE_CONCURRENCY=2` пікове навантаження RAM: до `1-2 GB` при A4 high-detail orders.
+Практичне правило (production-validated):
+- запускати `4` окремих `order-worker` контейнери через `--scale order-worker=4`;
+- кожен воркер: `ORDER_QUEUE_CONCURRENCY=1`, `RASTERIZE_CONCURRENCY=1`;
+- кожен воркер обробляє рівно 1 замовлення зі своїм незалежним GhostScript слотом;
+- сумарно: 4 замовлення паралельно, ~1.5-2 ядра CPU mean, ~120 MB RAM total;
+- preflight фаза займає 14-18 секунд замість 6-8 хвилин при shared semaphore;
+- типовий час A5 замовлення: 1.5-2.5 хв; A4 або мультифайл: 4-9 хв;
+- пропускна здатність: ~80 замовлень/годину, що перевищує виробничі потреби бутіку в 10-20 разів.
 
 ## 13. Вузькі місця
 - Ghostscript і rasterization PDF.
@@ -260,9 +264,12 @@ PDF-стадія:
 ## 15. Рекомендована production-модель
 Базова надійна схема для цього бізнес-процесу:
 - `1` Node.js/TypeScript receiver service
-- `1` durable queue backend
-- `1-2` worker services
+- `1` durable queue backend (PostgreSQL)
+- `4` order-worker контейнери (`--scale order-worker=4`), кожен з `ORDER_QUEUE_CONCURRENCY=1`
+- `1` reaction-worker контейнер
 - persistent storage для message mapping, idempotency, DLQ, audit trail
 - локальний диск або object storage для артефактів PDF
+
+Ключовий інсайт: оптимальна конфігурація — N воркерів з `concurrency=1` замість 1 воркера з `concurrency=N`. Кожен воркер має власний GhostScript семафор, що усуває чергу очікування між замовленнями. Fault isolation: якщо один воркер завис, інші 3 продовжують роботу.
 
 Це не overengineering для “не мільйона користувачів”, бо головний ризик тут не трафік, а стабільність важкого PDF-процесу і відновлення після помилок.

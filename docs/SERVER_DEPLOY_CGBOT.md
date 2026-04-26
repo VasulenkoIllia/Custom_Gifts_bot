@@ -15,7 +15,7 @@
 - `receiver`, `order-worker`, `reaction-worker` запускаються з `init: true` — child-процеси GhostScript коректно збираються після завершення.
 - Деталі PDF pipeline: [docs/CURRENT_PDF_PIPELINE.md](/Users/monstermac/WebstormProjects/Custom_Gifts_bot/docs/CURRENT_PDF_PIPELINE.md).
 
-## 1.1 Актуальні значення PDF pipeline
+## 1.1 Актуальні значення PDF pipeline і воркерів
 
 ```bash
 # DPI routing: SKU з high-detail-skus.json → 1200, решта → 800
@@ -23,9 +23,12 @@ RASTERIZE_DPI=800
 RASTERIZE_DPI_HIGH_DETAIL=1200
 PDF_HIGH_DETAIL_SKUS_PATH=config/business-rules/high-detail-skus.json
 
-# Паралельність: 2 замовлення одночасно, ліміт 2 GhostScript процеси (~3 ядра з 4)
-ORDER_QUEUE_CONCURRENCY=2
-RASTERIZE_CONCURRENCY=2
+# Паралельність: 4 незалежних order-worker контейнери, кожен обробляє 1 замовлення
+# ORDER_QUEUE_CONCURRENCY=1: 1 замовлення на воркер (без внутрішньої конкуренції за GhostScript)
+# RASTERIZE_CONCURRENCY=1: 1 GhostScript процес на воркер
+# Разом: 4 замовлення паралельно, 4 незалежних GhostScript слоти
+ORDER_QUEUE_CONCURRENCY=1
+RASTERIZE_CONCURRENCY=1
 
 # Колір і якість
 PDF_COLOR_SPACE=CMYK
@@ -34,6 +37,19 @@ PDF_FINAL_PREFLIGHT_MEASURE_DPI=200
 ```
 
 Якщо `PDF_HIGH_DETAIL_SKUS_PATH` відсутній, нечитабельний або порожній — сервіс не стартує (fail-fast).
+
+### Чому 4 воркери замість 1 з high concurrency
+
+Тестування показало що спільний GhostScript семафор у одному процесі при 4+ паралельних замовленнях створює чергу очікування до 6-8 хвилин на preflight фазу. З 4 окремими воркерами (кожен зі своїм семафором) preflight займає 14-18 секунд, а замовлення обробляються ізольовано без взаємного блокування.
+
+Порівняння конфігурацій на однакових 5 замовленнях:
+
+| Конфігурація | A5 (1 файл) | A4+A5×2 (3 файли) |
+|---|---|---|
+| 1 воркер, concurrency=2 | 3-8 хв | 12 хв |
+| 1 воркер, concurrency=4 | 10-13 хв | 13 хв |
+| 2 воркери, concurrency=2 | 4-8 хв | 9 хв |
+| **4 воркери, concurrency=1** | **1.5-2.5 хв** | **8 хв** |
 
 ## 2. Traefik assumptions
 - Traefik already runs on the server
@@ -54,7 +70,10 @@ docker compose -f docker-compose.prod.yml --env-file .env.production stop receiv
 
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d postgres
 docker compose -f docker-compose.prod.yml --env-file .env.production --profile ops run --rm migrate
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build receiver order-worker reaction-worker
+
+# запустити receiver і reaction-worker як раніше, order-worker — з 4 репліками
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build receiver reaction-worker
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build --scale order-worker=4
 ```
 
 Recommended checks right after update:
@@ -176,4 +195,5 @@ After the first server test orders, verify:
 - Telegram caption contains `DPI`, `strict`, `agg`, `corrected`, and `Час опрацювання`.
 - Normal orders should usually have `corrected=0` with `OFFWHITE_HEX=F7F6F2`.
 - `pdf_pipeline_finished.finalPreflightCorrectedPixels` should stay `0` or close to `0` on most orders.
-- Under `ORDER_QUEUE_CONCURRENCY=2`, `gs` processes should not exceed the effective `RASTERIZE_CONCURRENCY=2` cap during PDF-heavy phases.
+- З 4 воркерами `gs` процеси не повинні перевищувати 4 одночасно (1 per worker).
+- Перевірити що запущено саме 4 order-worker контейнери: `docker compose ... ps | grep order-worker` має показати `order-worker-1..4`.
