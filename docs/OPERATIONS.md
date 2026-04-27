@@ -317,6 +317,27 @@ Pipeline забезпечує максимальну якість на всіх 
 Якщо RAM `8 GB+`:
 - можна тестувати `2` важких PDF job; піднімати вище тільки після вимірювань `timingFinalPreflightMs`, `finalPreflightCorrectedPixels`, RSS і кількості `gs` процесів
 
+### 11.1 Memory limits і захист від swap
+
+Кожен `order-worker` отримує жорсткий ліміт:
+- `mem_limit: 1400m` — Docker не дозволяє контейнеру зайняти більше
+- `memswap_limit: 1400m` — swap для воркера = 0 (memswap_limit = mem_limit)
+- `--max-old-space-size=768` (в `CMD`) — V8 heap cap; GC стає агресивнішим до досягнення ліміту
+
+Чому ці числа:
+- V8 heap під час обробки замовлення (завантаження source PDF + растеризація): до ~700 МБ
+- Ghostscript під час CMYK-конверсії: пік ~300–400 МБ поза V8
+- 1400 МБ = запас для піків при 800 DPI і CMYK pipeline
+
+Що відбувається при OOM:
+- Docker вбиває контейнер; `restart: unless-stopped` піднімає його за кілька секунд
+- Queue lease expiry автоматично повертає задачу у `queued`; інший воркер підхопить її
+- Жодних втрат замовлень: retry вбудований у чергу
+
+Рекомендації по хосту:
+- `vm.swappiness=10` в `/etc/sysctl.conf` — ядро не лізе в swap поки є вільна RAM
+- Swap залишати увімкненим як страховий буфер для інших контейнерів і OOM-спайків
+
 ## 12. Storage
 Потрібно мати:
 - temp directory

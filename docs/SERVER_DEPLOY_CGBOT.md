@@ -76,6 +76,24 @@ docker compose -f docker-compose.prod.yml --env-file .env.production up -d --bui
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build --scale order-worker=4
 ```
 
+### 3.1 Одноразова підготовка хоста (виконати один раз на сервері)
+
+Зменшити агресивність swap — ядро не виштовхуватиме сторінки у swap поки є вільна RAM:
+```bash
+# застосувати зараз
+sysctl vm.swappiness=10
+
+# зробити постійним
+echo "vm.swappiness=10" >> /etc/sysctl.conf
+```
+
+Очистити swap після деплою нових воркерів з mem_limit (виконати у тихий час):
+```bash
+# переміщує сторінки зі swap назад в RAM, потім очищає swap
+# безпечно якщо вільної RAM > обсягу зайнятого swap
+swapoff -a && swapon -a
+```
+
 Recommended checks right after update:
 ```bash
 docker compose -f docker-compose.prod.yml --env-file .env.production ps
