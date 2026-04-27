@@ -8,6 +8,7 @@ type ParsedArgs = {
   appBaseUrl: string | null;
   updatedAt: string;
   sourceUuid: string | null;
+  force: boolean;
 };
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -16,6 +17,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let appBaseUrl: string | null = null;
   let updatedAt = new Date().toISOString();
   let sourceUuid: string | null = null;
+  let force = false;
 
   for (const arg of argv) {
     if (arg.startsWith("--order-id=")) {
@@ -42,6 +44,11 @@ function parseArgs(argv: string[]): ParsedArgs {
       sourceUuid = arg.slice("--source-uuid=".length).trim() || null;
       continue;
     }
+
+    if (arg === "--force") {
+      force = true;
+      continue;
+    }
   }
 
   return {
@@ -50,6 +57,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     appBaseUrl,
     updatedAt,
     sourceUuid,
+    force,
   };
 }
 
@@ -68,6 +76,7 @@ async function main(): Promise<void> {
       status_id: args.statusId,
       updated_at: args.updatedAt,
       source_uuid: args.sourceUuid || `manual-trigger-${args.orderId}-${randomUUID()}`,
+      force: args.force || undefined,
     },
   };
 

@@ -10,6 +10,7 @@ export type KeycrmWebhookEvent = {
     status_changed_at?: string;
     updated_at?: string;
     source_uuid?: string;
+    force?: boolean;
   };
 };
 
@@ -19,6 +20,7 @@ export type OrderWebhookCandidate = {
   statusChangedAt: string | null;
   sourceUuid: string | null;
   idempotencyKey: string;
+  force?: boolean;
 };
 
 export type NormalizeKeycrmWebhookResult = {
@@ -131,6 +133,7 @@ export function normalizeKeycrmWebhook(payload: unknown): NormalizeKeycrmWebhook
       ),
       sourceUuid: normalizeOptionalString(eventPayload.context?.source_uuid),
       idempotencyKey: buildIdempotencyKey(eventPayload, orderId),
+      force: eventPayload.context?.force === true ? true : undefined,
     });
   }
 

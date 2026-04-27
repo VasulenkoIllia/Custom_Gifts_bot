@@ -97,6 +97,7 @@ export class KeycrmWebhookController {
               webhookEvent: "order.change_order_status",
               sourceUuid: candidate.sourceUuid,
               receivedAt: new Date().toISOString(),
+              force: candidate.force,
             },
           });
 

@@ -403,27 +403,40 @@ export function createOrderIntakeWorker({
   };
 
   return async (job) => {
-    const webhookStatusId = normalizeStatusId(job.payload.statusId);
-    if (webhookStatusId !== null && webhookStatusId !== materialsStatusId) {
-      logger.info("order_intake_skipped_by_webhook_status", {
-        orderId: job.payload.orderId,
-        webhookStatusId,
-        materialsStatusId,
-        jobId: job.id,
-      });
-      return;
+    const force = job.payload.force === true;
+
+    if (!force) {
+      const webhookStatusId = normalizeStatusId(job.payload.statusId);
+      if (webhookStatusId !== null && webhookStatusId !== materialsStatusId) {
+        logger.info("order_intake_skipped_by_webhook_status", {
+          orderId: job.payload.orderId,
+          webhookStatusId,
+          materialsStatusId,
+          jobId: job.id,
+        });
+        return;
+      }
     }
 
     const order = await crmClient.getOrder(job.payload.orderId);
-    const orderStatusId = normalizeStatusId(order.status_id ?? job.payload.statusId);
-    if (orderStatusId !== null && orderStatusId !== materialsStatusId) {
-      logger.info("order_intake_skipped_by_order_status", {
+
+    if (!force) {
+      const orderStatusId = normalizeStatusId(order.status_id ?? job.payload.statusId);
+      if (orderStatusId !== null && orderStatusId !== materialsStatusId) {
+        logger.info("order_intake_skipped_by_order_status", {
+          orderId: String(order.id),
+          orderStatusId,
+          materialsStatusId,
+          jobId: job.id,
+        });
+        return;
+      }
+    } else {
+      logger.info("order_intake_force_processing", {
         orderId: String(order.id),
-        orderStatusId,
-        materialsStatusId,
+        actualStatusId: order.status_id,
         jobId: job.id,
       });
-      return;
     }
 
     const orderProcessingStartedAt = Date.now();

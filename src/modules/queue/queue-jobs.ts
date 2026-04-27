@@ -4,6 +4,7 @@ export type OrderIntakeJobPayload = {
   webhookEvent: string;
   sourceUuid: string | null;
   receivedAt: string;
+  force?: boolean;
 };
 
 export type ReactionIntakeJobPayload = {
