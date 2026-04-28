@@ -76,8 +76,8 @@ services:
     volumes:
       - cgbot_prod_output_data:/app/storage/files/materials
       - cgbot_prod_temp_data:/app/storage/temp
-    mem_limit: 1400m
-    memswap_limit: 1400m
+    mem_limit: 2000m
+    memswap_limit: 2000m
 
   reaction-worker:
     <<: *app-base
