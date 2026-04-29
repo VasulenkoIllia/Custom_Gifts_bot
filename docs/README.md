@@ -13,6 +13,8 @@
   - повна модель env/config і бізнес-правил.
 - [docs/ARCHITECTURE_AUDIT_2026-04-11.md](./ARCHITECTURE_AUDIT_2026-04-11.md)
   - результат технічного аудиту архітектури і якості коду.
+- [docs/ARCHITECTURE_AUDIT_2026-04-29.md](./ARCHITECTURE_AUDIT_2026-04-29.md)
+  - аудит production-readiness: security, стресостійкість, DB pool, відкриті ризики.
 
 ## Операційні та валідаційні документи
 - [docs/WEBHOOK_CHECKLIST.md](./WEBHOOK_CHECKLIST.md)

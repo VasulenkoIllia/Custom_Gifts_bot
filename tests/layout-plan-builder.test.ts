@@ -439,3 +439,92 @@ test("LayoutPlanBuilder treats Live Photo as manager flag without unlinked warni
   assert.deepEqual(plan.flags, ["LF +"]);
   assert.deepEqual(plan.notes, []);
 });
+
+test("LayoutPlanBuilder uses A4 engraving bounds for TextcollageA5Wood SKUs", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  for (const sku of [
+    "TextcollageA5Wood",
+    "TextcollageA5WoodWW",
+    "TextcollageA5WoodMultiWW",
+    "TextcollageA5WoodRBG",
+    "Collage2HeartA5Wood",
+    "Collage2HeartA5WoodWW",
+    "Collage2HeartA5WoodMultiWW",
+    "Collage2HeartA5WoodRGB",
+  ]) {
+    const plan = builder.build({
+      id: 9000,
+      products: [
+        {
+          id: 1,
+          sku,
+          name: "Poster",
+          properties: [
+            { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+            { name: "Текст для гравіювання", value: "Текст гравіювання" },
+          ],
+        },
+      ],
+    });
+
+    const engraving = plan.materials.find((m) => m.type === "engraving");
+    assert.ok(engraving, `SKU ${sku}: engraving material expected`);
+    assert.equal(engraving.format, "A4", `SKU ${sku}: engraving format must be A4`);
+    assert.equal(engraving.text, "Текст гравіювання");
+
+    const poster = plan.materials.find((m) => m.type === "poster");
+    assert.ok(poster, `SKU ${sku}: poster material expected`);
+    assert.equal(poster.format, "A5", `SKU ${sku}: poster format stays A5`);
+  }
+});
+
+test("LayoutPlanBuilder keeps A5 engraving bounds for regular A5 SKUs", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 9001,
+    products: [
+      {
+        id: 1,
+        sku: "PhotoPosterA5Wood",
+        name: "Poster",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+          { name: "Текст для гравіювання", value: "Звичайний текст" },
+        ],
+      },
+    ],
+  });
+
+  const engraving = plan.materials.find((m) => m.type === "engraving");
+  assert.ok(engraving, "engraving material expected");
+  assert.equal(engraving.format, "A5", "regular A5 SKU keeps A5 engraving format");
+});
+
+test("LayoutPlanBuilder engraving filename code uses poster format regardless of A4 bounds override", async () => {
+  const rules = await loadProductCodeRules(rulesPath);
+  const builder = new LayoutPlanBuilder(rules);
+
+  const plan = builder.build({
+    id: 9002,
+    products: [
+      {
+        id: 1,
+        sku: "TextcollageA5WoodWW",
+        name: "Poster",
+        properties: [
+          { name: "_tib_design_link_1", value: "https://example.com/poster.pdf" },
+          { name: "Текст для гравіювання", value: "Мій текст" },
+        ],
+      },
+    ],
+  });
+
+  const engraving = plan.materials.find((m) => m.type === "engraving");
+  assert.ok(engraving, "engraving material expected");
+  assert.equal(engraving.format, "A4", "engraving zone uses A4 bounds");
+  assert.match(engraving.filename, /CGU_A5WW_G_/, "filename code still uses A5 format prefix");
+});

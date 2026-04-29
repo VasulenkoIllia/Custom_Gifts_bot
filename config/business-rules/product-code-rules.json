@@ -65,6 +65,16 @@
     "COLORLNIGHTLIGHTA5WW": "BM",
     "COLORLNIGHTLIGHTA5RGB": "BM"
   },
+  "engravingA4BoundSkus": [
+    "TextcollageA5Wood",
+    "TextcollageA5WoodWW",
+    "TextcollageA5WoodMultiWW",
+    "TextcollageA5WoodRBG",
+    "Collage2HeartA5Wood",
+    "Collage2HeartA5WoodWW",
+    "Collage2HeartA5WoodMultiWW",
+    "Collage2HeartA5WoodRGB"
+  ],
   "propertyNames": {
     "designLink": ["_tib_design_link_1"],
     "previewImage": ["_customization_image"],

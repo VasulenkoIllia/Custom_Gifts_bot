@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 
 export type ProductCodeRules = {
   specialPosterCodesBySku: Record<string, string>;
+  engravingA4BoundSkus: ReadonlySet<string>;
   propertyNames: {
     designLink: string[];
     previewImage: string[];
@@ -127,8 +128,18 @@ function normalizeRules(raw: unknown): ProductCodeRules {
       : DEFAULT_PROPERTY_NAMES.keychainFlag,
   };
 
+  const engravingA4BoundSkusRaw = Array.isArray(data.engravingA4BoundSkus)
+    ? data.engravingA4BoundSkus
+    : [];
+  const engravingA4BoundSkus = new Set<string>(
+    engravingA4BoundSkusRaw
+      .map((item: unknown) => normalizeSkuKey(String(item ?? "")))
+      .filter(Boolean),
+  );
+
   return {
     specialPosterCodesBySku,
+    engravingA4BoundSkus,
     propertyNames,
   };
 }
@@ -150,4 +161,12 @@ export function getSpecialPosterCodeBySku(rules: ProductCodeRules, sku: string):
 
 export function toSkuKey(sku: string): string {
   return normalizeSkuKey(sku);
+}
+
+export function hasEngravingA4Bounds(rules: ProductCodeRules, sku: string): boolean {
+  const normalizedSku = normalizeSkuKey(sku);
+  if (!normalizedSku) {
+    return false;
+  }
+  return rules.engravingA4BoundSkus.has(normalizedSku);
 }

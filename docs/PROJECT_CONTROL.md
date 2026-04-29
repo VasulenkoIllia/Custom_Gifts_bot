@@ -486,6 +486,29 @@
 - руками проставити `1 ❤️` і перевірити оновлення статусу на `Друк`;
 - перевірити, що `👍` не дає нового переходу, поки stage вимкнений.
 
+### Етап J. Engraving A4 bounds для Collage/Textcollage SKUs
+
+**Причина:** Товари `TextcollageA5Wood*` і `Collage2HeartA5Wood*` мають підставку A4-ширини,
+тому гравіювання повинно розраховуватися на межі A4 (22×210 мм), а не A5 (22×148 мм).
+
+**Реалізовано:**
+- `config/business-rules/product-code-rules.json` — новий масив `engravingA4BoundSkus` з 8 SKU;
+- `src/modules/layout/product-code-rules.ts` — тип `engravingA4BoundSkus: ReadonlySet<string>`, helper `hasEngravingA4Bounds()`;
+- `src/modules/layout/layout-plan-builder.ts` — при будуванні engraving payload перевіряє базовий SKU і виставляє `format: "A4"` якщо SKU в списку;
+  - **Ім'я файлу** (`A5W_G`) не змінюється — відображає фізичний формат товару;
+  - **Engraving zone** (`format` у payload) стає `"A4"` → `resolveEngravingZone` повертає 210×22 мм.
+- `tests/layout-plan-builder.test.ts` — 3 нові тести (всі 8 SKU, regular fallback, filename invariant).
+
+**SKU список:**
+```
+TextcollageA5Wood, TextcollageA5WoodWW, TextcollageA5WoodMultiWW, TextcollageA5WoodRBG
+Collage2HeartA5Wood, Collage2HeartA5WoodWW, Collage2HeartA5WoodMultiWW, Collage2HeartA5WoodRGB
+```
+
+**Статус:** реалізовано, тести зелені (114/114). Потребує ручного UAT: замовлення з одним із цих SKU + гравіювання.
+
+---
+
 ### Етап I. Stress, hardening, production cutover
 Статус: `in_progress`
 
@@ -520,6 +543,19 @@
 - full production switch.
 
 ## 6. Що ще не закрито
+
+### Security (потребує виправлення перед production)
+- **`KEYCRM_WEBHOOK_SECRET` і `TELEGRAM_REACTION_SECRET_TOKEN` не перевіряються як непусті у `validateConfig`.**
+  При порожньому значенні webhook endpoints стають публічними.
+  Виправлення: додати дві перевірки в `validate-config.ts`.
+  Деталі: [docs/ARCHITECTURE_AUDIT_2026-04-29.md](./ARCHITECTURE_AUDIT_2026-04-29.md)
+
+### Операційне
+- Знизити `DATABASE_POOL_MAX` до 8-10 при деплої 4+ order-workers
+  (поточний дефолт 20 → 120 з'єднань при 4 workers + receiver + reaction-worker, PostgreSQL default max=100).
+- Зафіксувати `--scale order-worker=4` у deploy-документації або `docker-compose.prod.yml`.
+
+### Бізнес-логіка (відкладені рішення)
 - Фінально зафіксувати політику `copy` чи `forward` для пересилання у `ЗАМОВЛЕННЯ`.
 - Визначити, чи реакції приймаємо тільки з PDF-повідомлень, чи також із preview.
 - Визначити, чи пересилання після `1 ❤️` дублюється в приватний чат менеджера.
@@ -535,7 +571,8 @@
 - Telegram rate limit;
 - temp file growth;
 - memory spikes на `A4` і multi-pass recolor;
-- падіння worker у середині pipeline.
+- падіння worker у середині pipeline;
+- **webhook security bypass при порожньому secret (незакрито, critical)**.
 
 ## 8. Правило контролю якості
 Кожен етап вважається завершеним тільки якщо є:

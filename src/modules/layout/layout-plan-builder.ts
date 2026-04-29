@@ -10,7 +10,7 @@ import {
   stripEmoji,
 } from "./layout.utils";
 import type { LayoutMaterial, LayoutPlan } from "./layout.types";
-import type { ProductCodeRules } from "./product-code-rules";
+import { hasEngravingA4Bounds, type ProductCodeRules } from "./product-code-rules";
 import { resolvePosterCode } from "./sku-classifier";
 import { resolveStandType } from "./stand-type-resolver";
 
@@ -121,6 +121,8 @@ export class LayoutPlanBuilder {
         this.hasAddonPattern(linked, ["sticker", "стікер"]);
 
       if (hasEngraving) {
+        const baseSku = productSku(base.product);
+        const engravingFormat = hasEngravingA4Bounds(this.rules, baseSku) ? "A4" : format;
         plannedMaterials.push({
           type: "engraving",
           code: `${format}${standType}_G`,
@@ -129,10 +131,10 @@ export class LayoutPlanBuilder {
                 type: "engraving",
                 code: `${format}${standType}_G`,
                 productId: Number.isFinite(Number(base.product.id)) ? Number(base.product.id) : null,
-                sku: productSku(base.product) || null,
+                sku: baseSku || null,
                 sourceUrl: null,
                 text: engravingText,
-                format,
+                format: engravingFormat,
                 standType,
               }
             : null,
