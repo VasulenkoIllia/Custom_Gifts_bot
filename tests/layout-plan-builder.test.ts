@@ -504,7 +504,7 @@ test("LayoutPlanBuilder keeps A5 engraving bounds for regular A5 SKUs", async ()
   assert.equal(engraving.format, "A5", "regular A5 SKU keeps A5 engraving format");
 });
 
-test("LayoutPlanBuilder engraving filename code uses poster format regardless of A4 bounds override", async () => {
+test("LayoutPlanBuilder engraving filename code uses A4 format for A4-bounds SKUs", async () => {
   const rules = await loadProductCodeRules(rulesPath);
   const builder = new LayoutPlanBuilder(rules);
 
@@ -526,5 +526,5 @@ test("LayoutPlanBuilder engraving filename code uses poster format regardless of
   const engraving = plan.materials.find((m) => m.type === "engraving");
   assert.ok(engraving, "engraving material expected");
   assert.equal(engraving.format, "A4", "engraving zone uses A4 bounds");
-  assert.match(engraving.filename, /CGU_A5WW_G_/, "filename code still uses A5 format prefix");
+  assert.match(engraving.filename, /CGU_A4WW_G_/, "filename code uses A4 format prefix");
 });

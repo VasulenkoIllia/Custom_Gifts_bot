@@ -320,14 +320,15 @@ Pipeline забезпечує максимальну якість на всіх 
 ### 11.1 Memory limits і захист від swap
 
 Кожен `order-worker` отримує жорсткий ліміт:
-- `mem_limit: 1400m` — Docker не дозволяє контейнеру зайняти більше
-- `memswap_limit: 1400m` — swap для воркера = 0 (memswap_limit = mem_limit)
+- `mem_limit: 3000m` — Docker не дозволяє контейнеру зайняти більше
+- `memswap_limit: 3000m` — swap для воркера = 0 (memswap_limit = mem_limit)
 - `--max-old-space-size=768` (в `CMD`) — V8 heap cap; GC стає агресивнішим до досягнення ліміту
 
 Чому ці числа:
 - V8 heap під час обробки замовлення (завантаження source PDF + растеризація): до ~700 МБ
 - Ghostscript під час CMYK-конверсії: пік ~300–400 МБ поза V8
-- 1400 МБ = запас для піків при 800 DPI і CMYK pipeline
+- A4 @ 1200 DPI (high-detail SKUs): raw raster ~420 МБ + multi-pass processing — потребує до ~2.2 ГБ
+- 3000 МБ = надійний запас для A4 high-detail pipeline
 
 Що відбувається при OOM:
 - Docker вбиває контейнер; `restart: unless-stopped` піднімає його за кілька секунд

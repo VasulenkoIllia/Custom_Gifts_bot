@@ -125,11 +125,11 @@ export class LayoutPlanBuilder {
         const engravingFormat = hasEngravingA4Bounds(this.rules, baseSku) ? "A4" : format;
         plannedMaterials.push({
           type: "engraving",
-          code: `${format}${standType}_G`,
+          code: `${engravingFormat}${standType}_G`,
           payload: engravingText
             ? {
                 type: "engraving",
-                code: `${format}${standType}_G`,
+                code: `${engravingFormat}${standType}_G`,
                 productId: Number.isFinite(Number(base.product.id)) ? Number(base.product.id) : null,
                 sku: baseSku || null,
                 sourceUrl: null,
