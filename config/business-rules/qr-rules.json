@@ -167,8 +167,8 @@
         "AppleGrandpaA4WoodMultiWW"
       ],
       "qrPlacementByFormat": {
-        "A5": { "mode": "right_bottom", "widthMm": 18, "heightMm": 18, "rightMm": 15, "bottomMm": 65 },
-        "A4": { "mode": "right_bottom", "widthMm": 25, "heightMm": 25, "rightMm": 25, "bottomMm": 98 }
+        "A5": { "mode": "right_bottom", "widthMm": 18, "heightMm": 18, "rightMm": 16.8, "bottomMm": 66.5 },
+        "A4": { "mode": "right_bottom", "widthMm": 25, "heightMm": 25, "rightMm": 28.7, "bottomMm": 94.8 }
       }
     }
   ]
